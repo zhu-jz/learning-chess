@@ -46,6 +46,27 @@ Halfmove clock: 17
 Fullmove number: 42""".splitlines()
 
 
+def fen_with_pieces(pieces, side="w"):
+    """Build small attack fixtures from a mapping such as {"d4": "N"}."""
+    rows = []
+    for rank in "87654321":
+        row = ""
+        empty = 0
+        for file in "abcdefgh":
+            piece = pieces.get(file + rank)
+            if piece is None:
+                empty += 1
+            else:
+                if empty:
+                    row += str(empty)
+                    empty = 0
+                row += piece
+        if empty:
+            row += str(empty)
+        rows.append(row)
+    return "/".join(rows) + f" {side} - - 0 1"
+
+
 class UciTests(unittest.TestCase):
     def setUp(self):
         self.engine = subprocess.Popen(
@@ -97,6 +118,11 @@ class UciTests(unittest.TestCase):
         for line in expected:
             self.expect(line)
         self.expect("readyok")
+
+    def expect_attack(self, square, color, expected):
+        self.send(f"attacked {square} {color}\n")
+        answer = "yes" if expected else "no"
+        self.expect(f"info string attacked {square} {color} {answer}")
 
     def test_handshake_while_input_stays_open(self):
         self.send("uci\n")
@@ -198,6 +224,94 @@ class UciTests(unittest.TestCase):
             self.send(command + "\n")
             self.expect("info string Move lists are not supported yet")
             self.expect_position(SAMPLE_POSITION)
+        self.send("quit\n")
+        self.expect_exit()
+
+    def test_piece_attack_patterns(self):
+        diagonal = "a1 b2 c3 e5 f6 g7 h8 a7 b6 c5 e3 f2 g1"
+        straight = "a4 b4 c4 e4 f4 g4 h4 d1 d2 d3 d5 d6 d7 d8"
+        cases = [
+            ("P", "d4", "c5 e5"),
+            ("p", "d4", "c3 e3"),
+            ("N", "d4", "b3 b5 c2 c6 e2 e6 f3 f5"),
+            ("B", "d4", diagonal),
+            ("R", "d4", straight),
+            ("Q", "d4", diagonal + " " + straight),
+            ("K", "d4", "c3 d3 e3 c4 e4 c5 d5 e5"),
+            ("N", "h1", "f2 g3"),
+            ("B", "h1", "g2 f3 e4 d5 c6 b7 a8"),
+            ("R", "h1", "a1 b1 c1 d1 e1 f1 g1 h2 h3 h4 h5 h6 h7 h8"),
+            ("Q", "h1", "a1 b1 c1 d1 e1 f1 g1 h2 h3 h4 h5 h6 h7 h8 "
+                         "g2 f3 e4 d5 c6 b7 a8"),
+            ("K", "h1", "g1 g2 h2"),
+            ("P", "a2", "b3"), ("P", "h2", "g3"),
+            ("p", "a7", "b6"), ("p", "h7", "g6"),
+            ("P", "a8", ""), ("p", "h1", ""),
+        ]
+        # Non-pawn attacks have the same geometry for both colors.
+        cases += [(piece.lower(), square, targets)
+                  for piece, square, targets in cases if piece in "NBRQK"]
+        for piece, source, targets in cases:
+            with self.subTest(piece=piece, source=source):
+                self.send("position fen " + fen_with_pieces({source: piece}) + "\n")
+                color = "white" if piece.isupper() else "black"
+                other = "black" if color == "white" else "white"
+                expected = set(targets.split())
+                for rank in "12345678":
+                    for file in "abcdefgh":
+                        square = file + rank
+                        self.expect_attack(square, color, square in expected)
+                self.expect_attack(source, other, False)
+        self.send("quit\n")
+        self.expect_exit()
+
+    def test_sliding_attacks_stop_at_first_piece(self):
+        # Each row gives a square before the blocker, the blocker, and beyond.
+        rays = [("d5", "d6", "d7"), ("d3", "d2", "d1"),
+                ("e4", "f4", "g4"), ("c4", "b4", "a4"),
+                ("e5", "f6", "g7"), ("c5", "b6", "a7"),
+                ("e3", "f2", "g1"), ("c3", "b2", "a1")]
+        for queen, color in [("Q", "white"), ("q", "black")]:
+            for blocker in ["N", "n"]:
+                for before, occupied, beyond in rays:
+                    with self.subTest(queen=queen, blocker=blocker, square=occupied):
+                        fen = fen_with_pieces({"d4": queen, occupied: blocker})
+                        self.send("position fen " + fen + "\n")
+                        self.expect_attack(before, color, True)
+                        self.expect_attack(occupied, color, True)
+                        self.expect_attack(beyond, color, False)
+        self.send("quit\n")
+        self.expect_exit()
+
+    def test_knight_jumps_and_pinned_pieces_still_attack(self):
+        self.send("position fen 8/8/8/8/8/8/PP6/NP6 w - - 0 1\n")
+        self.expect_attack("b3", "white", True)
+        self.expect_attack("c2", "white", True)
+        self.send("position fen k3r3/8/8/8/8/8/4N3/4K3 w - - 0 1\n")
+        self.expect_attack("f4", "white", True)
+        self.expect_attack("e1", "black", False)
+        self.expect_attack("e2", "black", True)
+        # Kings attack adjacent squares even when moving there would be illegal.
+        self.send("position fen 8/8/8/8/8/4k3/8/4K3 b - - 0 1\n")
+        self.expect_attack("e2", "white", True)
+        self.expect_attack("e2", "black", True)
+        self.send("quit\n")
+        self.expect_exit()
+
+    def test_attack_commands_preserve_position(self):
+        self.send("position fen " + SAMPLE_FEN + "\n")
+        self.send(" \tattacked\td6\twhite \r\n")
+        self.expect("info string attacked d6 white yes")
+        self.expect_attack("d6", "black", False)
+        for command in ["attacked", "attacked e4", "attacked e4 red",
+                        "attacked a0 white", "attacked a9 white",
+                        "attacked i4 white", "attacked E4 white",
+                        "attacked e44 white", "attacked e white",
+                        "attacked e4 white extra"]:
+            with self.subTest(command=command):
+                self.send(command + "\n")
+                self.expect("info string Invalid attacked command")
+        self.expect_position(SAMPLE_POSITION)
         self.send("quit\n")
         self.expect_exit()
 

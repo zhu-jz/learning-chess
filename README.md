@@ -152,6 +152,66 @@ and preserves the previous position. Trailing text is rejected too. Move lists
 such as `position startpos moves e2e4` report that moves are not supported yet
 and also preserve the previous position.
 
+## Lesson 4: detecting attacked squares
+
+`is_square_attacked` answers whether a given color attacks a square. It scans
+the 64 squares, finds pieces of that color, and asks `piece_attacks_square`
+whether each piece reaches the target. Both functions inspect the position
+without changing it, and the answer is independent of whose turn it is.
+
+The new `attacked` inspection command takes a square and `white` or `black`.
+Like `d`, this is an extra command for studying the engine, not standard UCI.
+For example:
+
+```text
+position startpos
+attacked e3 white
+attacked e4 white
+attacked e6 black
+```
+
+The replies are:
+
+```text
+info string attacked e3 white yes
+info string attacked e4 white no
+info string attacked e6 black yes
+```
+
+The pawns on d2 and f2 attack e3. Their ability to move forward is a separate
+rule. The parser requires a square from a1 to h8, a color, and no extra words;
+invalid input reports `info string Invalid attacked command`.
+
+For each piece, the code subtracts the starting file and rank from the target
+file and rank. The signs show direction; `abs` from `<stdlib.h>` gives the
+distances. This keeps the two board dimensions explicit: h1 and a2 are adjacent
+array entries, but their files are seven columns apart.
+
+| Piece | Attack pattern |
+| --- | --- |
+| White pawn | One file sideways and one rank upwards |
+| Black pawn | One file sideways and one rank downwards |
+| Knight | One file and two ranks, or two files and one rank |
+| King | One square in any direction |
+| Bishop | Equal file and rank distances |
+| Rook | Same file or same rank |
+| Queen | Bishop or rook pattern |
+
+A piece never attacks its own square. For bishops, rooks, and queens, matching
+the pattern is only the first step. The code then walks towards the target,
+one square at a time. Any intervening piece blocks the attack. The walk stops
+before the target, so the first occupied square is still attacked or defended.
+Because alignment is checked first and both endpoints are valid, the walk
+stays on the board. Knights skip this walk and can jump over pieces.
+
+Attack detection is not legal move generation. Pawns attack empty diagonal
+squares, kings attack adjacent squares, and pinned pieces still count as
+attackers. The latter rule is explicit in
+[FIDE's Laws of Chess, article 3.1.3](https://handbook.fide.com/chapter/e012023).
+We also count a friendly occupied target as defended. These conventions will
+let us test a king's safety after making a candidate move. This lesson does
+not yet generate moves or report check automatically.
+
 ## Build and try it
 
 From the project root in PowerShell, using MSYS2 UCRT64 GCC:
@@ -197,3 +257,7 @@ piece, and coordinate label, then repeats the display to check that inspection
 leaves the position unchanged. FEN tests cover every position field, resetting
 the position, en passant without a capturer, counter limits, and rejection of
 malformed input or unsupported move lists without changing the current state.
+Attack tests check every target square for isolated pieces of both colors,
+central and edge positions, blockers in all eight sliding directions, knight
+jumps, pinned pieces, and command validation. Some fixtures intentionally omit
+kings to isolate a single piece's geometry; they are not complete legal games.

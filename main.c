@@ -1,5 +1,6 @@
 #include <limits.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 enum Piece {
@@ -202,6 +203,128 @@ static void read_position_command(struct Position *position)
     *position = next;
 }
 
+/* Empty squares have no color. */
+static int piece_color(int piece)
+{
+    if (piece == EMPTY)
+        return -1;
+    if (piece <= WHITE_KING)
+        return WHITE;
+    return BLACK;
+}
+
+/* Test the piece's attack pattern, without considering its own king's safety.
+   Both squares must be valid board indices. The target may be occupied by
+   either color: a piece also defends a square occupied by a friendly piece. */
+static int piece_attacks_square(const struct Position *position, int from, int to)
+{
+    int piece = position->board[from];
+    int file_difference = to % 8 - from % 8;
+    int rank_difference = to / 8 - from / 8;
+    int file_distance = abs(file_difference);
+    int rank_distance = abs(rank_difference);
+
+    if (piece == EMPTY || from == to)
+        return 0;
+
+    /* Pawns attack diagonally, even when the target square is empty. */
+    if (piece == WHITE_PAWN)
+        return file_distance == 1 && rank_difference == 1;
+    if (piece == BLACK_PAWN)
+        return file_distance == 1 && rank_difference == -1;
+
+    if (piece == WHITE_KNIGHT || piece == BLACK_KNIGHT)
+        return (file_distance == 1 && rank_distance == 2)
+            || (file_distance == 2 && rank_distance == 1);
+
+    if (piece == WHITE_KING || piece == BLACK_KING)
+        return file_distance <= 1 && rank_distance <= 1;
+
+    if (piece == WHITE_BISHOP || piece == BLACK_BISHOP) {
+        if (file_distance != rank_distance)
+            return 0;
+    } else if (piece == WHITE_ROOK || piece == BLACK_ROOK) {
+        if (file_difference != 0 && rank_difference != 0)
+            return 0;
+    } else if (piece == WHITE_QUEEN || piece == BLACK_QUEEN) {
+        if (file_difference != 0 && rank_difference != 0
+            && file_distance != rank_distance)
+            return 0;
+    } else {
+        return 0;
+    }
+
+    /* The target is on a sliding piece's line. Walk towards it, stopping
+       before the target: only intervening pieces block the attack. */
+    int file_step = 0;
+    int rank_step = 0;
+    if (file_difference > 0)
+        file_step = 1;
+    if (file_difference < 0)
+        file_step = -1;
+    if (rank_difference > 0)
+        rank_step = 1;
+    if (rank_difference < 0)
+        rank_step = -1;
+
+    int file = from % 8 + file_step;
+    int rank = from / 8 + rank_step;
+    while (rank * 8 + file != to) {
+        if (position->board[rank * 8 + file] != EMPTY)
+            return 0;
+        file += file_step;
+        rank += rank_step;
+    }
+    return 1;
+}
+
+static int is_square_attacked(const struct Position *position, int square, int by_color)
+{
+    for (int from = 0; from < 64; from++) {
+        if (piece_color(position->board[from]) == by_color
+            && piece_attacks_square(position, from, square))
+            return 1;
+    }
+    return 0;
+}
+
+/* A manual inspection command, independent of whose turn it is. */
+static void read_attack_command(const struct Position *position)
+{
+    char *square_name = strtok(NULL, " \t\r");
+    char *color_name = strtok(NULL, " \t\r");
+    char *extra = strtok(NULL, " \t\r");
+
+    if (square_name == NULL || color_name == NULL || extra != NULL) {
+        puts("info string Invalid attacked command");
+        return;
+    }
+    if (strlen(square_name) != 2
+        || square_name[0] < 'a' || square_name[0] > 'h'
+        || square_name[1] < '1' || square_name[1] > '8') {
+        puts("info string Invalid attacked command");
+        return;
+    }
+
+    int color;
+    if (strcmp(color_name, "white") == 0)
+        color = WHITE;
+    else if (strcmp(color_name, "black") == 0)
+        color = BLACK;
+    else {
+        puts("info string Invalid attacked command");
+        return;
+    }
+
+    int square = (square_name[1] - '1') * 8 + square_name[0] - 'a';
+    int attacked = is_square_attacked(position, square, color);
+    printf("info string attacked %s %s ", square_name, color_name);
+    if (attacked)
+        puts("yes");
+    else
+        puts("no");
+}
+
 static void print_board(const struct Position *position)
 {
     /* Print from rank 8 down to rank 1, as seen from White's side. */
@@ -288,6 +411,8 @@ int main(void)
             read_position_command(&position);
         } else if (strcmp(command, "d") == 0) {
             print_board(&position);
+        } else if (strcmp(command, "attacked") == 0) {
+            read_attack_command(&position);
         } else if (strcmp(command, "quit") == 0) {
             break;
         }
