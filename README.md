@@ -58,8 +58,8 @@ inside the program. We locate a square with `rank * 8 + file`:
 `set_start_position` clears the board, then places both back ranks and the
 pawns. It receives the address of the position (`&position`), so assignments
 through `position->board` change that position rather than a separate copy.
-The position currently stores only piece placement; later lessons will add
-the side to move and other state needed to describe a chess game.
+In lesson 2 the position stored only piece placement. Lesson 3 adds the
+side to move and other state needed to describe a chess game.
 
 The new `d` command displays the board. This is a manual inspection command,
 not a standard UCI command. Enter it while the engine is running:
@@ -82,8 +82,75 @@ Black's, and a dot marks an empty square. `N` means knight; `K` means king.
 White at the bottom. Its `const` parameter prevents it from changing the board
 through that pointer.
 
-The engine initializes the starting position once at startup. FEN parsing,
-the UCI `position` command, and moving pieces are left for later lessons.
+The engine initializes the starting position at startup. The display above
+shows the board portion; lesson 3 adds the position's other fields below it.
+
+## Lesson 3: reading a position from FEN
+
+FEN (Forsyth-Edwards Notation) describes a position with six fields. For example:
+
+```text
+r3k2r/8/8/3pP3/8/8/8/R3K2R w Kq d6 17 42
+```
+
+| Field | Example | Meaning |
+| --- | --- | --- |
+| Pieces | `r3k2r/.../R3K2R` | Ranks 8 to 1, separated by `/`; digits count empty squares |
+| Side to move | `w` | `w` for White, `b` for Black |
+| Castling rights | `Kq` | White kingside and Black queenside rights |
+| En passant target | `d6` | Target square after a pawn's two-square advance |
+| Halfmove clock | `17` | Plies since the last pawn move or capture |
+| Fullmove number | `42` | Starts at 1 and increases after Black's move |
+
+Castling uses the letters `KQkq`, in that order, omitting unavailable rights.
+A single `-` means no rights or no en passant target. A castling right does not
+mean castling is legal immediately. FEN records an en passant target even when
+no opposing pawn can capture there. These conventions come from the
+[FEN specification, section 16.1](https://www.saremba.de/chessgml/standards/pgn/pgn-complete.htm#c16.1).
+
+Try these commands in the running engine:
+
+```text
+position fen r3k2r/8/8/3pP3/8/8/8/R3K2R w Kq d6 17 42
+d
+position startpos
+d
+quit
+```
+
+The first `d` shows the supplied board followed by:
+
+```text
+Side to move: White
+Castling: Kq
+En passant: d6
+Halfmove clock: 17
+Fullmove number: 42
+```
+
+`position startpos` restores every field to its initial value. Successful
+`position` commands do not print a response; use `d` to inspect the result.
+
+`read_position_command` continues splitting the command line with `strtok`.
+Calling `strtok` with `NULL` continues from its previous location; the six
+field pointers refer to words inside the existing line buffer. `read_fen`
+then reads those fields explicitly, in order. Castling rights are four integer
+flags, and an en passant square of `-1` means no target.
+
+The parser checks eight ranks of eight squares, piece letters, side, castling
+syntax, and en passant coordinates. The target must be on rank 6 with White
+to move or rank 3 with Black to move. Counters must contain decimal digits,
+fit in an `int`, and have a fullmove number of at least 1. `read_number` checks
+for overflow before multiplying by ten, so even very long input is safe.
+These are format checks, not a full chess legality check: king counts, check,
+and whether pieces support the claimed rights will be addressed with the rules.
+
+All parsing happens in a temporary `struct Position`. Only a successful command
+reaches `*position = next`, which copies the entire structure, including its
+arrays. A malformed command prints `info string Invalid position command`
+and preserves the previous position. Trailing text is rejected too. Move lists
+such as `position startpos moves e2e4` report that moves are not supported yet
+and also preserve the previous position.
 
 ## Build and try it
 
@@ -127,4 +194,6 @@ The tests talk to a running process through pipes, checking that replies arrive
 before input closes. They also check whitespace, unknown commands, oversized
 lines, `quit`, and end of input. The board test checks every displayed rank,
 piece, and coordinate label, then repeats the display to check that inspection
-leaves the position unchanged.
+leaves the position unchanged. FEN tests cover every position field, resetting
+the position, en passant without a capturer, counter limits, and rejection of
+malformed input or unsupported move lists without changing the current state.
