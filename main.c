@@ -288,6 +288,73 @@ static int is_square_attacked(const struct Position *position, int square, int b
     return 0;
 }
 
+/* Return -1 unless there is exactly one king of the requested color. */
+static int find_king(const struct Position *position, int color)
+{
+    int king;
+    if (color == WHITE)
+        king = WHITE_KING;
+    else
+        king = BLACK_KING;
+
+    int king_square = -1;
+    for (int square = 0; square < 64; square++) {
+        if (position->board[square] == king) {
+            if (king_square != -1)
+                return -1;
+            king_square = square;
+        }
+    }
+    return king_square;
+}
+
+/* Return 1 for check, 0 for no check, or -1 for a missing or duplicate king.
+   The caller must handle -1 separately rather than treating it as true. */
+static int is_in_check(const struct Position *position, int color)
+{
+    int king_square = find_king(position, color);
+    if (king_square == -1)
+        return -1;
+
+    int opponent;
+    if (color == WHITE)
+        opponent = BLACK;
+    else
+        opponent = WHITE;
+    return is_square_attacked(position, king_square, opponent);
+}
+
+static void read_check_command(const struct Position *position)
+{
+    char *color_name = strtok(NULL, " \t\r");
+    char *extra = strtok(NULL, " \t\r");
+    if (color_name == NULL || extra != NULL) {
+        puts("info string Invalid check command");
+        return;
+    }
+
+    int color;
+    if (strcmp(color_name, "white") == 0)
+        color = WHITE;
+    else if (strcmp(color_name, "black") == 0)
+        color = BLACK;
+    else {
+        puts("info string Invalid check command");
+        return;
+    }
+
+    int check = is_in_check(position, color);
+    if (check == -1) {
+        printf("info string Cannot check %s: expected exactly one king\n", color_name);
+        return;
+    }
+    printf("info string check %s ", color_name);
+    if (check == 1)
+        puts("yes");
+    else
+        puts("no");
+}
+
 /* A manual inspection command, independent of whose turn it is. */
 static void read_attack_command(const struct Position *position)
 {
@@ -413,6 +480,8 @@ int main(void)
             print_board(&position);
         } else if (strcmp(command, "attacked") == 0) {
             read_attack_command(&position);
+        } else if (strcmp(command, "check") == 0) {
+            read_check_command(&position);
         } else if (strcmp(command, "quit") == 0) {
             break;
         }

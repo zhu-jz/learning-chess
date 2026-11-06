@@ -124,6 +124,11 @@ class UciTests(unittest.TestCase):
         answer = "yes" if expected else "no"
         self.expect(f"info string attacked {square} {color} {answer}")
 
+    def expect_check(self, color, expected):
+        self.send(f"check {color}\n")
+        answer = "yes" if expected else "no"
+        self.expect(f"info string check {color} {answer}")
+
     def test_handshake_while_input_stays_open(self):
         self.send("uci\n")
         self.expect("id name Learning Chess")
@@ -311,6 +316,75 @@ class UciTests(unittest.TestCase):
             with self.subTest(command=command):
                 self.send(command + "\n")
                 self.expect("info string Invalid attacked command")
+        self.expect_position(SAMPLE_POSITION)
+        self.send("quit\n")
+        self.expect_exit()
+
+    def test_check_by_each_piece_and_color(self):
+        self.expect_check("white", False)
+        self.expect_check("black", False)
+        cases = [
+            ("white", {"e4": "K", "a8": "k"},
+             [("d5", "p"), ("f6", "n"), ("b7", "b"), ("e7", "r"), ("h4", "q")]),
+            ("black", {"e5": "k", "a1": "K"},
+             [("d4", "P"), ("f3", "N"), ("b2", "B"), ("e2", "R"), ("h5", "Q")]),
+        ]
+        for color, kings, attackers in cases:
+            for square, piece in attackers:
+                for side in ["w", "b"]:
+                    with self.subTest(color=color, attacker=piece, turn=side):
+                        pieces = kings.copy()
+                        pieces[square] = piece
+                        self.send("position fen " + fen_with_pieces(pieces, side) + "\n")
+                        self.expect_check(color, True)
+        # Adjacent kings attack one another, even in this illegal position.
+        self.send("position fen " + fen_with_pieces({"e4": "K", "e5": "k"}) + "\n")
+        self.expect_check("white", True)
+        self.expect_check("black", True)
+        self.send("quit\n")
+        self.expect_exit()
+
+    def test_check_with_blockers_and_pinned_attacker(self):
+        for blocker in ["N", "n"]:
+            pieces = {"e1": "K", "a8": "k", "e8": "r", "e2": blocker}
+            self.send("position fen " + fen_with_pieces(pieces) + "\n")
+            self.expect_check("white", False)
+        # A friendly rook defending the king's square is not an enemy attack.
+        self.send("position fen " + fen_with_pieces({"e1": "K", "e8": "R", "a8": "k"}) + "\n")
+        self.expect_check("white", False)
+        # The black knight is pinned to its king, but still attacks f4.
+        pieces = {"f4": "K", "e1": "R", "e2": "n", "e8": "k"}
+        self.send("position fen " + fen_with_pieces(pieces) + "\n")
+        self.expect_check("white", True)
+        self.expect_check("black", False)
+        self.send("quit\n")
+        self.expect_exit()
+
+    def test_check_requires_exactly_one_requested_king(self):
+        cases = [({}, "white"), ({}, "black"),
+                 ({"a1": "K", "h1": "K", "a8": "k"}, "white"),
+                 ({"a8": "k", "h8": "k", "a1": "K"}, "black")]
+        for pieces, color in cases:
+            with self.subTest(pieces=pieces, color=color):
+                self.send("position fen " + fen_with_pieces(pieces) + "\n")
+                self.send(f"check {color}\n")
+                self.expect(f"info string Cannot check {color}: expected exactly one king")
+        # Inspection of one king is allowed in an otherwise incomplete fixture.
+        for piece, color in [("K", "white"), ("k", "black")]:
+            for square in ["a1", "h8"]:
+                self.send("position fen " + fen_with_pieces({square: piece}) + "\n")
+                self.expect_check(color, False)
+        self.send("quit\n")
+        self.expect_exit()
+
+    def test_check_commands_preserve_position(self):
+        self.send("position fen " + SAMPLE_FEN + "\n")
+        self.send(" \tcheck\twhite \r\n")
+        self.expect("info string check white no")
+        self.expect_check("black", False)
+        for command in ["check", "check red", "check White", "check white extra"]:
+            self.send(command + "\n")
+            self.expect("info string Invalid check command")
         self.expect_position(SAMPLE_POSITION)
         self.send("quit\n")
         self.expect_exit()

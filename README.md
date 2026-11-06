@@ -212,6 +212,50 @@ We also count a friendly occupied target as defended. These conventions will
 let us test a king's safety after making a candidate move. This lesson does
 not yet generate moves or report check automatically.
 
+## Lesson 5: detecting check
+
+Check detection builds directly on attack detection: find the king's square,
+then ask whether the opposing color attacks it. `find_king` scans the board
+for the requested king. `is_in_check` selects the opponent and calls
+`is_square_attacked`, so it needs no new piece movement rules.
+
+The new `check white` and `check black` inspection commands ask about the named
+color, regardless of whose turn it is. Like `attacked`, these are extra study
+commands, not standard UCI. For example:
+
+```text
+position fen k3r3/8/8/8/8/8/8/4K3 w - - 0 1
+check white
+check black
+```
+
+The black rook on e8 attacks the white king on e1, giving these replies:
+
+```text
+info string check white yes
+info string check black no
+```
+
+`is_in_check` returns `1` for check and `0` for no check. Our FEN reader also
+accepts incomplete study positions, so there is a third result: `-1` means
+the requested color has no king or more than one king. `find_king` scans beyond
+the first match to catch duplicates, and `is_in_check` handles this error before
+using the square as a board index. The command then reports, for example:
+
+```text
+info string Cannot check white: expected exactly one king
+```
+
+In C, any nonzero value is true, including `-1`. The command therefore tests
+the error result explicitly before printing yes or no. This distinction keeps
+an invalid king count from being mistaken for check or a safe king.
+
+Only the requested color's king count is checked. This is an inspection of
+that king, not a full position validator: adjacent kings can both report check,
+and a pinned enemy piece still counts as an attacker. Neither the position nor
+its side to move changes. Checkmate and stalemate will require legal move
+generation in later lessons.
+
 ## Build and try it
 
 From the project root in PowerShell, using MSYS2 UCRT64 GCC:
@@ -261,3 +305,6 @@ Attack tests check every target square for isolated pieces of both colors,
 central and edge positions, blockers in all eight sliding directions, knight
 jumps, pinned pieces, and command validation. Some fixtures intentionally omit
 kings to isolate a single piece's geometry; they are not complete legal games.
+Check tests cover both colors, each attacking piece, blockers, pinned attackers,
+adjacent kings, missing or duplicate kings, and inspection without changing
+the position.
