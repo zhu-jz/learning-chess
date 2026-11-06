@@ -76,6 +76,27 @@ class UciTests(unittest.TestCase):
         self.send("quit\nisready\n")
         self.expect_exit()
 
+    def test_starting_board(self):
+        expected = [
+            "8 r n b q k b n r",
+            "7 p p p p p p p p",
+            "6 . . . . . . . .",
+            "5 . . . . . . . .",
+            "4 . . . . . . . .",
+            "3 . . . . . . . .",
+            "2 P P P P P P P P",
+            "1 R N B Q K B N R",
+            "  a b c d e f g h",
+        ]
+        for _ in range(2):
+            self.send("d\n")
+            for line in expected:
+                self.expect(line)
+            self.send("isready\n")
+            self.expect("readyok")
+        self.send("quit\n")
+        self.expect_exit()
+
     def test_line_length_boundary(self):
         self.send(" " * 4088 + "isready\n")  # Exactly 4095 bytes.
         self.expect("readyok")
