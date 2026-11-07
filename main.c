@@ -27,6 +27,15 @@ struct Position {
     int fullmove_number;         /* Starts at 1; increases after Black moves. */
 };
 
+struct Move {
+    int from;
+    int to;
+};
+
+/* This lesson considers each pair of squares at most once. The generous
+   bound also accommodates study positions with unusual numbers of pieces. */
+enum { MAX_MOVES = 64 * 64 };
+
 static void set_start_position(struct Position *position)
 {
     const int white_back_rank[8] = {
@@ -324,6 +333,77 @@ static int is_in_check(const struct Position *position, int color)
     return is_square_attacked(position, king_square, opponent);
 }
 
+/* This is a temporary board for testing king safety, not a complete move
+   application: turn, clocks, and castling rights are not needed by this test. */
+static int move_keeps_king_safe(const struct Position *position, struct Move move)
+{
+    struct Position next = *position;
+    next.board[move.to] = next.board[move.from];
+    next.board[move.from] = EMPTY;
+    return is_in_check(&next, position->side_to_move) == 0;
+}
+
+/* The caller supplies room for MAX_MOVES entries. Return -1 if either color
+   lacks exactly one king. Pawns and castling are left for later lessons. */
+static int generate_non_pawn_moves(const struct Position *position, struct Move moves[])
+{
+    if (find_king(position, WHITE) == -1 || find_king(position, BLACK) == -1)
+        return -1;
+
+    int count = 0;
+    for (int from = 0; from < 64; from++) {
+        int piece = position->board[from];
+        if (piece_color(piece) != position->side_to_move)
+            continue;
+        if (piece == WHITE_PAWN || piece == BLACK_PAWN)
+            continue;
+
+        for (int to = 0; to < 64; to++) {
+            int target = position->board[to];
+            if (piece_color(target) == position->side_to_move)
+                continue;
+            /* Kings are never captured; checkmate is determined from legal moves. */
+            if (target == WHITE_KING || target == BLACK_KING)
+                continue;
+            if (!piece_attacks_square(position, from, to))
+                continue;
+
+            struct Move move;
+            move.from = from;
+            move.to = to;
+            if (move_keeps_king_safe(position, move)) {
+                moves[count] = move;
+                count++;
+            }
+        }
+    }
+    return count;
+}
+
+static void read_moves_command(const struct Position *position)
+{
+    if (strtok(NULL, " \t\r") != NULL) {
+        puts("info string Invalid moves command");
+        return;
+    }
+
+    struct Move moves[MAX_MOVES];
+    int count = generate_non_pawn_moves(position, moves);
+    if (count == -1) {
+        puts("info string Cannot generate moves: expected exactly one king of each color");
+        return;
+    }
+
+    printf("info string moves non-pawn");
+    for (int i = 0; i < count; i++) {
+        int from = moves[i].from;
+        int to = moves[i].to;
+        printf(" %c%d%c%d", 'a' + from % 8, from / 8 + 1,
+                           'a' + to % 8, to / 8 + 1);
+    }
+    putchar('\n');
+}
+
 static void read_check_command(const struct Position *position)
 {
     char *color_name = strtok(NULL, " \t\r");
@@ -482,6 +562,8 @@ int main(void)
             read_attack_command(&position);
         } else if (strcmp(command, "check") == 0) {
             read_check_command(&position);
+        } else if (strcmp(command, "moves") == 0) {
+            read_moves_command(&position);
         } else if (strcmp(command, "quit") == 0) {
             break;
         }

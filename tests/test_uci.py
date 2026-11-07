@@ -129,6 +129,19 @@ class UciTests(unittest.TestCase):
         answer = "yes" if expected else "no"
         self.expect(f"info string check {color} {answer}")
 
+    def read_moves(self):
+        self.send("moves\n")
+        try:
+            line = self.output.get(timeout=TIMEOUT)
+        except Empty:
+            self.fail("Timed out waiting for moves")
+        self.assertIsNotNone(line)
+        words = line.split()
+        self.assertEqual(words[:4], ["info", "string", "moves", "non-pawn"])
+        moves = words[4:]
+        self.assertEqual(len(moves), len(set(moves)), "Duplicate moves")
+        return moves
+
     def test_handshake_while_input_stays_open(self):
         self.send("uci\n")
         self.expect("id name Learning Chess")
@@ -386,6 +399,115 @@ class UciTests(unittest.TestCase):
             self.send(command + "\n")
             self.expect("info string Invalid check command")
         self.expect_position(SAMPLE_POSITION)
+        self.send("quit\n")
+        self.expect_exit()
+
+    def test_starting_non_pawn_moves_and_position_preservation(self):
+        for _ in range(2):
+            self.assertEqual(self.read_moves(), ["b1a3", "b1c3", "g1f3", "g1h3"])
+            self.expect_position(START_POSITION)
+        self.send("position fen " + START_FEN.replace(" w ", " b ") + "\n")
+        self.assertEqual(self.read_moves(), ["b8a6", "b8c6", "g8f6", "g8h6"])
+        self.send("position fen " + SAMPLE_FEN + "\n")
+        self.read_moves()
+        self.expect_position(SAMPLE_POSITION)
+        self.send("quit\n")
+        self.expect_exit()
+
+    def test_non_pawn_move_patterns(self):
+        diagonal = "b2 c3 e5 f6 g7 h8 a7 b6 c5 e3 f2 g1"
+        straight = "a4 b4 c4 e4 f4 g4 h4 d1 d2 d3 d5 d6 d7 d8"
+        cases = [("N", "b3 b5 c2 c6 e2 e6 f3 f5"),
+                 ("B", diagonal), ("R", straight), ("Q", diagonal + " " + straight)]
+        for side in ["w", "b"]:
+            for piece, targets in cases:
+                with self.subTest(side=side, piece=piece):
+                    pieces = {"a1": "K", "h7": "k", "d4": piece}
+                    if side == "b":
+                        pieces = {square: symbol.swapcase() for square, symbol in pieces.items()}
+                    self.send("position fen " + fen_with_pieces(pieces, side) + "\n")
+                    moves = self.read_moves()
+                    self.assertCountEqual([move for move in moves if move[:2] == "d4"],
+                                          ["d4" + square for square in targets.split()])
+                    self.assertTrue(all(move[:2] in ["a1", "d4"] for move in moves))
+        self.send("position fen " + fen_with_pieces({"a1": "K", "h8": "k"}) + "\n")
+        self.assertCountEqual(self.read_moves(), ["a1b1", "a1a2", "a1b2"])
+        self.send("quit\n")
+        self.expect_exit()
+
+    def test_move_captures_and_blockers(self):
+        pieces = {"a1": "K", "h7": "k", "d4": "Q", "f4": "P", "d6": "p"}
+        self.send("position fen " + fen_with_pieces(pieces) + "\n")
+        moves = self.read_moves()
+        for move in ["d4e4", "d4d5", "d4d6"]:
+            self.assertIn(move, moves)
+        for move in ["d4f4", "d4g4", "d4d7", "d4a1", "d4d4"]:
+            self.assertNotIn(move, moves)
+        # Even an otherwise invalid study position must never capture a king.
+        self.send("position fen " + fen_with_pieces({"a1": "K", "h8": "k", "h1": "R"}) + "\n")
+        self.assertNotIn("h1h8", self.read_moves())
+        self.send("quit\n")
+        self.expect_exit()
+
+    def test_pinned_moves_and_check_evasions(self):
+        king_moves = ["e1d1", "e1f1", "e1d2", "e1f2"]
+        for piece in ["N", "R"]:
+            self.send("position fen " + fen_with_pieces(
+                {"e1": "K", "a8": "k", "e8": "r", "e2": piece}) + "\n")
+            expected = king_moves.copy()
+            if piece == "R":
+                expected += ["e2e3", "e2e4", "e2e5", "e2e6", "e2e7", "e2e8"]
+            self.assertCountEqual(self.read_moves(), expected)
+        # The knight can interpose on either e2 or e4 to answer the rook check.
+        self.send("position fen " + fen_with_pieces(
+            {"e1": "K", "a8": "k", "e8": "r", "c3": "N"}) + "\n")
+        self.assertCountEqual(self.read_moves(), king_moves + ["c3e2", "c3e4"])
+        # Blocking just the bishop does not answer this double check.
+        self.send("position fen " + fen_with_pieces(
+            {"e1": "K", "a8": "k", "e8": "r", "b4": "b", "a2": "N"}) + "\n")
+        self.assertCountEqual(self.read_moves(), ["e1d1", "e1f1", "e1f2"])
+        # Capturing the checking knight removes its attack from the copied board.
+        self.send("position fen " + fen_with_pieces(
+            {"e2": "K", "a8": "k", "c3": "n", "b1": "N"}) + "\n")
+        self.assertIn("b1c3", self.read_moves())
+        self.send("quit\n")
+        self.expect_exit()
+
+    def test_king_safety_after_moving_or_capturing(self):
+        for defended in [False, True]:
+            pieces = {"e1": "K", "a8": "k", "e2": "r"}
+            if defended:
+                pieces["e8"] = "r"
+            self.send("position fen " + fen_with_pieces(pieces) + "\n")
+            self.assertEqual("e1e2" in self.read_moves(), not defended)
+        # e1 currently blocks the rook's line to f1; moving the king uncovers it.
+        self.send("position fen " + fen_with_pieces({"e1": "K", "h8": "k", "a1": "r"}) + "\n")
+        self.assertNotIn("e1f1", self.read_moves())
+        self.send("position fen " + fen_with_pieces({"e1": "K", "e3": "k"}) + "\n")
+        self.assertCountEqual(self.read_moves(), ["e1d1", "e1f1"])
+        # The pinned black knight still makes f5 unsafe for White's king.
+        self.send("position fen " + fen_with_pieces(
+            {"f4": "K", "e1": "R", "e7": "n", "e8": "k"}) + "\n")
+        self.assertNotIn("f4f5", self.read_moves())
+        self.send("quit\n")
+        self.expect_exit()
+
+    def test_moves_errors_and_incomplete_scope(self):
+        for pieces in [{}, {"a1": "K"}, {"a8": "k"},
+                       {"a1": "K", "b1": "K", "a8": "k"},
+                       {"a8": "k", "b8": "k", "a1": "K"}]:
+            self.send("position fen " + fen_with_pieces(pieces) + "\nmoves\n")
+            self.expect("info string Cannot generate moves: expected exactly one king of each color")
+        self.send("position startpos\nmoves extra\n")
+        self.expect("info string Invalid moves command")
+        self.expect_position(START_POSITION)
+        self.send("position fen r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1\n")
+        moves = self.read_moves()
+        self.assertNotIn("e1g1", moves)
+        self.assertNotIn("e1c1", moves)
+        # No non-pawn moves does not mean no legal moves: a2a3 remains possible.
+        self.send("position fen 8/8/8/8/8/6k1/P4q2/7K w - - 0 1\n")
+        self.assertEqual(self.read_moves(), [])
         self.send("quit\n")
         self.expect_exit()
 

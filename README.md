@@ -256,6 +256,61 @@ and a pinned enemy piece still counts as an attacker. Neither the position nor
 its side to move changes. Checkmate and stalemate will require legal move
 generation in later lessons.
 
+## Lesson 6: ordinary non-pawn moves
+
+`struct Move` holds two square indices, `from` and `to`. The new
+`generate_non_pawn_moves` function fills an array of these structures for the
+side to move. This lesson covers knights, bishops, rooks, queens, and ordinary
+one-square king moves. Pawns and castling will be added separately.
+
+The `moves` inspection command takes no arguments. At the starting position:
+
+```text
+position startpos
+moves
+```
+
+The response is:
+
+```text
+info string moves non-pawn b1a3 b1c3 g1f3 g1h3
+```
+
+Each move is printed as its starting square followed by its destination.
+Only the four knight moves appear because pawn moves are outside this lesson.
+The `non-pawn` label makes that limitation visible. This is an extra study
+command; it does not apply moves or implement the UCI `go` command.
+
+The generator considers each starting square, then each destination square.
+It skips pieces of the wrong color and pawns, rejects friendly destinations
+and king captures, then reuses `piece_attacks_square` to check movement and
+blockers. For these pieces, the ordinary movement pattern is the attack
+pattern. Pawns will need separate rules for forward moves and captures.
+
+Each remaining candidate goes through `move_keeps_king_safe`. That function
+copies the position, clears the starting square, and places the moving piece
+on the destination, replacing any captured piece. It keeps the move only when
+`is_in_check` returns exactly zero for the moving side. Testing the resulting
+board handles pins, capturing a checking piece, blocking a check, and attacks
+uncovered when the king vacates its square.
+
+This copy is only for the king-safety test. It does not update the side to move,
+clocks, en passant target, or castling rights, because attack detection does not
+use them. Complete move application will be a separate lesson. The original
+position, including all of its metadata, stays unchanged.
+
+The caller provides an array of `MAX_MOVES` entries and receives a count.
+The bound is deliberately generous: 64 starting squares times 64 destinations.
+Each pair is considered only once, so the array cannot overflow, even on study
+boards with unusual piece counts. The function returns `-1` if either color
+does not have exactly one king, and the command reports that error explicitly.
+It does not otherwise validate whether the position could arise in a game.
+
+The list currently follows increasing source and destination indices. Matching
+the reference engine's move order will be a later step toward search parity.
+An empty list here means only that no supported non-pawn moves were found; it
+cannot establish checkmate or stalemate while pawn moves are missing.
+
 ## Build and try it
 
 From the project root in PowerShell, using MSYS2 UCRT64 GCC:
@@ -308,3 +363,7 @@ kings to isolate a single piece's geometry; they are not complete legal games.
 Check tests cover both colors, each attacking piece, blockers, pinned attackers,
 adjacent kings, missing or duplicate kings, and inspection without changing
 the position.
+Move-generation tests cover both sides, ordinary piece patterns, captures,
+pins, check evasions, king safety after captures, and inspection without
+changing any position fields. They also check missing kings and the deliberate
+exclusion of pawn moves and castling.
