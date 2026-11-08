@@ -137,7 +137,7 @@ class UciTests(unittest.TestCase):
             self.fail("Timed out waiting for moves")
         self.assertIsNotNone(line)
         words = line.split()
-        self.assertEqual(words[:4], ["info", "string", "moves", "ordinary"])
+        self.assertEqual(words[:4], ["info", "string", "moves", "partial"])
         moves = words[4:]
         self.assertEqual(len(moves), len(set(moves)), "Duplicate moves")
         return moves
@@ -145,7 +145,7 @@ class UciTests(unittest.TestCase):
     def expect_pawn_moves_both_colors(self, pieces, source, targets):
         # Reflect ranks and exchange colors to exercise the same rule for Black.
         def reflect(square):
-            return square[0] + str(9 - int(square[1]))
+            return square[0] + str(9 - int(square[1])) + square[2:]
 
         for side in ["w", "b"]:
             board = pieces
@@ -555,12 +555,11 @@ class UciTests(unittest.TestCase):
         self.send("quit\n")
         self.expect_exit()
 
-    def test_pawn_edges_and_promotion_exclusion(self):
+    def test_pawn_edges_and_end_ranks(self):
         cases = [
             ({"a2": "P", "b3": "n", "h2": "n"}, "a2", "a3 a4 b3"),
             ({"h2": "P", "g3": "b", "a4": "n"}, "h2", "h3 h4 g3"),
             ({"e6": "P"}, "e6", "e7"),
-            ({"e7": "P", "d8": "n", "f8": "n"}, "e7", ""),
             ({"a1": "P"}, "a1", ""),
             ({"a8": "P"}, "a8", ""),
         ]
@@ -589,6 +588,63 @@ class UciTests(unittest.TestCase):
         ]
         for board, source, targets in cases:
             self.expect_pawn_moves_both_colors(board, source, targets)
+        self.send("quit\n")
+        self.expect_exit()
+
+    def test_promotion_choices_for_advances_and_captures(self):
+        cases = [
+            ({"h1": "K", "h8": "k", "e7": "P"}, "e7", ["e8"]),
+            ({"h1": "K", "h8": "k", "e7": "P", "d8": "n", "f8": "n"},
+             "e7", ["d8", "e8", "f8"]),
+            ({"h1": "K", "h8": "k", "a7": "P", "b8": "n"}, "a7", ["a8", "b8"]),
+            ({"a1": "K", "a8": "k", "h7": "P", "g8": "n"}, "h7", ["g8", "h8"]),
+        ]
+        for board, source, destinations in cases:
+            targets = " ".join(square + piece for square in destinations for piece in "nbrq")
+            self.expect_pawn_moves_both_colors(board, source, targets)
+        self.send("quit\n")
+        self.expect_exit()
+
+    def test_promotion_blockers_and_king_capture_exclusion(self):
+        cases = [
+            ({"h1": "K", "h8": "k", "e7": "P", "e8": "n"}, "e7", ""),
+            ({"h1": "K", "h8": "k", "e7": "P", "e8": "N", "d8": "B"}, "e7", ""),
+            ({"h1": "K", "h8": "k", "e7": "P", "e8": "N", "d8": "n", "f8": "B"},
+             "e7", "d8n d8b d8r d8q"),
+            ({"h1": "K", "d8": "k", "e7": "P"}, "e7", "e8n e8b e8r e8q"),
+        ]
+        for board, source, targets in cases:
+            self.expect_pawn_moves_both_colors(board, source, targets)
+        self.send("quit\n")
+        self.expect_exit()
+
+    def test_promotions_respect_king_safety(self):
+        cases = [
+            # Capturing the rook is the only pawn move that answers its check.
+            ({"e1": "K", "a8": "k", "e8": "r", "d7": "P"}, "d7", "e8n e8b e8r e8q"),
+            # Each promotion blocks the checking rook's line along rank 8.
+            ({"a8": "K", "h6": "k", "h8": "r", "e7": "P"}, "e7", "e8n e8b e8r e8q"),
+            # Capturing on d8 would expose the king to the rook on e8.
+            ({"e1": "K", "a8": "k", "e8": "r", "e7": "P", "d8": "n"}, "e7", ""),
+        ]
+        for board, source, targets in cases:
+            self.expect_pawn_moves_both_colors(board, source, targets)
+        self.send("quit\n")
+        self.expect_exit()
+
+    def test_promotions_preserve_position_and_print_suffixes(self):
+        self.send("position fen 7k/4P3/8/8/8/8/8/7K w - - 9 12\n")
+        expected = ["h1g1", "h1g2", "h1h2", "e7e8n", "e7e8b", "e7e8r", "e7e8q"]
+        for _ in range(2):
+            self.assertEqual(self.read_moves(), expected)
+            self.expect_position([
+                "8 . . . . . . . k", "7 . . . . P . . .",
+                "6 . . . . . . . .", "5 . . . . . . . .",
+                "4 . . . . . . . .", "3 . . . . . . . .",
+                "2 . . . . . . . .", "1 . . . . . . . K",
+                "  a b c d e f g h", "Side to move: White", "Castling: -",
+                "En passant: -", "Halfmove clock: 9", "Fullmove number: 12",
+            ])
         self.send("quit\n")
         self.expect_exit()
 

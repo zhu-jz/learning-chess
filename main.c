@@ -1,3 +1,4 @@
+#include <ctype.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -30,11 +31,12 @@ struct Position {
 struct Move {
     int from;
     int to;
+    int promotion;              /* Colored piece to place, or EMPTY for none. */
 };
 
-/* This lesson considers each pair of squares at most once. The generous
-   bound also accommodates study positions with unusual numbers of pieces. */
-enum { MAX_MOVES = 64 * 64 };
+/* Each pair of squares can produce at most four promotion choices. The
+   generous bound also accommodates study positions with unusual piece counts. */
+enum { MAX_MOVES = 64 * 64 * 4 };
 
 static void set_start_position(struct Position *position)
 {
@@ -340,6 +342,8 @@ static int move_keeps_king_safe(const struct Position *position, struct Move mov
     struct Position next = *position;
     next.board[move.to] = next.board[move.from];
     next.board[move.from] = EMPTY;
+    if (move.promotion != EMPTY)
+        next.board[move.to] = move.promotion;
     return is_in_check(&next, position->side_to_move) == 0;
 }
 
@@ -359,9 +363,8 @@ static int pawn_can_move(const struct Position *position, int from, int to)
         starting_rank = 6;
     }
 
-    /* Pawns cannot start on an end rank. Arriving there needs promotion,
-       which the current Move structure does not yet represent. */
-    if (from_rank == 0 || from_rank == 7 || to_rank == 0 || to_rank == 7)
+    /* A pawn already on an end rank is an invalid study-position piece. */
+    if (from_rank == 0 || from_rank == 7)
         return 0;
 
     int target = position->board[to];
@@ -378,9 +381,12 @@ static int pawn_can_move(const struct Position *position, int from, int to)
 }
 
 /* The caller supplies room for MAX_MOVES entries. Return -1 if either color
-   lacks exactly one king. Promotions, en passant, and castling come later. */
+   lacks exactly one king. En passant and castling come later. */
 static int generate_moves(const struct Position *position, struct Move moves[])
 {
+    const int white_promotions[4] = { WHITE_KNIGHT, WHITE_BISHOP, WHITE_ROOK, WHITE_QUEEN };
+    const int black_promotions[4] = { BLACK_KNIGHT, BLACK_BISHOP, BLACK_ROOK, BLACK_QUEEN };
+
     if (find_king(position, WHITE) == -1 || find_king(position, BLACK) == -1)
         return -1;
 
@@ -407,6 +413,24 @@ static int generate_moves(const struct Position *position, struct Move moves[])
             struct Move move;
             move.from = from;
             move.to = to;
+            move.promotion = EMPTY;
+
+            if ((piece == WHITE_PAWN && to / 8 == 7)
+                || (piece == BLACK_PAWN && to / 8 == 0)) {
+                for (int choice = 0; choice < 4; choice++) {
+                    if (piece == WHITE_PAWN)
+                        move.promotion = white_promotions[choice];
+                    else
+                        move.promotion = black_promotions[choice];
+                    if (move_keeps_king_safe(position, move)) {
+                        moves[count] = move;
+                        count++;
+                    }
+                }
+                /* There is no fifth choice that leaves the piece a pawn. */
+                continue;
+            }
+
             if (move_keeps_king_safe(position, move)) {
                 moves[count] = move;
                 count++;
@@ -430,12 +454,14 @@ static void read_moves_command(const struct Position *position)
         return;
     }
 
-    printf("info string moves ordinary");
+    printf("info string moves partial");
     for (int i = 0; i < count; i++) {
         int from = moves[i].from;
         int to = moves[i].to;
         printf(" %c%d%c%d", 'a' + from % 8, from / 8 + 1,
                            'a' + to % 8, to / 8 + 1);
+        if (moves[i].promotion != EMPTY)
+            putchar(tolower(piece_symbols[moves[i].promotion]));
     }
     putchar('\n');
 }

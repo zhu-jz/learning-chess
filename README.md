@@ -300,9 +300,9 @@ use them. Complete move application will be a separate lesson. The original
 position, including all of its metadata, stays unchanged.
 
 The caller provides an array of `MAX_MOVES` entries and receives a count.
-The bound is deliberately generous: 64 starting squares times 64 destinations.
-Each pair is considered only once, so the array cannot overflow, even on study
-boards with unusual piece counts. The function returns `-1` if either color
+The bound in lesson 6 was deliberately generous: 64 starting squares times 64
+destinations. Each pair produced at most one move; lesson 8 expands this bound
+for promotions. The function returns `-1` if either color
 does not have exactly one king, and the command reports that error explicitly.
 It does not otherwise validate whether the position could arise in a game.
 
@@ -329,7 +329,7 @@ diagonal pattern, so the helper reuses it. The generator's shared checks still
 exclude friendly targets and king captures. Pawns cannot capture forwards or
 move diagonally into an empty square.
 
-The `moves` response now begins with `info string moves ordinary`. At the
+In lesson 7 the `moves` response began with `info string moves ordinary`. At the
 starting position it lists 20 moves: four knight moves and sixteen pawn
 advances. For example, to inspect just a pawn and the two kings:
 
@@ -338,7 +338,7 @@ position fen 7k/8/8/8/8/8/4P3/7K w - - 0 1
 moves
 ```
 
-The response is:
+At the lesson 7 commit, the response was:
 
 ```text
 info string moves ordinary h1g1 h1g2 h1h2 e2e3 e2e4
@@ -350,15 +350,58 @@ by capturing sideways. A pawn can also answer check by blocking an attack or
 capturing the checking piece. For a double advance, king safety is tested on
 the final board, not on a hypothetical board with the pawn stopped halfway.
 
-Promotions, en passant, and castling remain unsupported. In particular, a pawn
-move to the last rank is omitted entirely until `Move` can record a promotion
-piece. Pawns already on an end rank in a study position produce no moves.
-An en passant target recorded in FEN does not yet enable that capture. The
-`ordinary` label marks this incomplete move list; an empty list still cannot
-be used to declare checkmate or stalemate.
+Lesson 7 omitted promotions, en passant, and castling. Pawn moves to the last
+rank were omitted entirely until `Move` could record a promotion piece.
+Lesson 8 adds those moves. Pawns already on an end rank in a study position
+still produce no moves.
 
 Move generation continues to leave the position unchanged. Applying moves,
 including updating clocks and other position fields, remains a separate lesson.
+
+## Lesson 8: promotions
+
+`Move` now has a `promotion` field. For an ordinary move it is `EMPTY`; for a
+promotion it holds the new colored piece, such as `WHITE_QUEEN` or
+`BLACK_KNIGHT`. Storing the actual piece makes updating the copied board a
+single assignment.
+
+`pawn_can_move` now permits a pawn to reach its last rank. Once the generator
+finds such a candidate, it emits four choices: knight, bishop, rook, and queen.
+The two explicit promotion arrays list the allowed pieces for each color.
+There is no choice to remain a pawn or become a king. The same loop handles
+both forward promotions and capture promotions.
+
+Every choice passes through `move_keeps_king_safe`. After moving the pawn and
+removing any captured piece, that function replaces the pawn with the chosen
+piece on the temporary board. The original position remains unchanged.
+
+Move printing adds a lowercase `n`, `b`, `r`, or `q` suffix for either color.
+For example, `e7e8q` promotes White's pawn to a queen, while `e2e1n` promotes
+Black's pawn to a knight. `tolower` from `<ctype.h>` converts our colored piece
+symbol to the lowercase suffix. Ordinary moves still have four characters.
+
+Try:
+
+```text
+position fen 7k/4P3/8/8/8/8/8/7K w - - 9 12
+moves
+```
+
+The response is:
+
+```text
+info string moves partial h1g1 h1g2 h1h2 e7e8n e7e8b e7e8r e7e8q
+```
+
+The label is now `partial`: en passant and castling remain unsupported, so an
+empty list still cannot establish checkmate or stalemate. Move application
+through UCI position commands will also be a separate lesson.
+
+`MAX_MOVES` is now `64 * 64 * 4`: at most four choices per pair of squares.
+This simple bound continues to accommodate unusual study positions. It uses
+more space than a practical chess engine needs, but its safety is easy to see.
+Choices currently appear in knight, bishop, rook, queen order; matching the
+reference's move ordering remains a later step toward search parity.
 
 ## Build and try it
 
@@ -417,4 +460,6 @@ pins, check evasions, king safety after captures, and inspection without
 changing any position fields. They also check missing kings and the deliberate
 exclusion of castling. Pawn tests cover both colors, blocked advances, starting
 ranks, captures, board edges, pins, check evasions, and the deliberate omission
-of promotions and en passant. The starting-position test now expects 20 moves.
+of en passant. Promotion tests cover every choice for both colors, forward and
+capture promotions, blockers, king safety, move suffixes, and preservation of
+the original position. The starting-position test continues to expect 20 moves.
