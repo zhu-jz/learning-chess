@@ -258,10 +258,10 @@ generation in later lessons.
 
 ## Lesson 6: ordinary non-pawn moves
 
-`struct Move` holds two square indices, `from` and `to`. The new
-`generate_non_pawn_moves` function fills an array of these structures for the
-side to move. This lesson covers knights, bishops, rooks, queens, and ordinary
-one-square king moves. Pawns and castling will be added separately.
+`struct Move` holds two square indices, `from` and `to`. Lesson 6 introduced
+`generate_non_pawn_moves` to fill an array of these structures for the side to
+move. It covered knights, bishops, rooks, queens, and ordinary one-square king
+moves. Lesson 7 extends the same function and renames it `generate_moves`.
 
 The `moves` inspection command takes no arguments. At the starting position:
 
@@ -270,18 +270,18 @@ position startpos
 moves
 ```
 
-The response is:
+At the lesson 6 commit, the response was:
 
 ```text
 info string moves non-pawn b1a3 b1c3 g1f3 g1h3
 ```
 
 Each move is printed as its starting square followed by its destination.
-Only the four knight moves appear because pawn moves are outside this lesson.
-The `non-pawn` label makes that limitation visible. This is an extra study
+Only the four knight moves appeared because pawn moves were outside that lesson.
+The `non-pawn` label made that limitation visible. This is an extra study
 command; it does not apply moves or implement the UCI `go` command.
 
-The generator considers each starting square, then each destination square.
+The lesson 6 generator considers each starting square, then each destination square.
 It skips pieces of the wrong color and pawns, rejects friendly destinations
 and king captures, then reuses `piece_attacks_square` to check movement and
 blockers. For these pieces, the ordinary movement pattern is the attack
@@ -308,8 +308,57 @@ It does not otherwise validate whether the position could arise in a game.
 
 The list currently follows increasing source and destination indices. Matching
 the reference engine's move order will be a later step toward search parity.
-An empty list here means only that no supported non-pawn moves were found; it
-cannot establish checkmate or stalemate while pawn moves are missing.
+At this stage an empty list meant only that no supported non-pawn moves were
+found; it could not establish checkmate or stalemate while pawn moves were missing.
+
+## Lesson 7: pawn advances and ordinary captures
+
+`generate_moves` now includes pawns. Its `pawn_can_move` helper handles their
+movement separately from attacks. White advances towards higher ranks and
+Black towards lower ranks; the code expresses this with a `direction` of `1`
+or `-1`.
+
+A pawn can advance one square on its file if the destination is empty. From
+rank 2 for White or rank 7 for Black, it can advance two squares when both the
+intermediate square and the destination are empty. A double advance checks
+the starting rank, so a pawn farther up the board cannot use it.
+
+For an ordinary capture, the destination must contain an enemy piece and be
+one square diagonally forwards. `piece_attacks_square` already describes that
+diagonal pattern, so the helper reuses it. The generator's shared checks still
+exclude friendly targets and king captures. Pawns cannot capture forwards or
+move diagonally into an empty square.
+
+The `moves` response now begins with `info string moves ordinary`. At the
+starting position it lists 20 moves: four knight moves and sixteen pawn
+advances. For example, to inspect just a pawn and the two kings:
+
+```text
+position fen 7k/8/8/8/8/8/4P3/7K w - - 0 1
+moves
+```
+
+The response is:
+
+```text
+info string moves ordinary h1g1 h1g2 h1h2 e2e3 e2e4
+```
+
+Every candidate still passes through `move_keeps_king_safe`. A pinned pawn
+may advance if it continues to shield its king, but may not expose that king
+by capturing sideways. A pawn can also answer check by blocking an attack or
+capturing the checking piece. For a double advance, king safety is tested on
+the final board, not on a hypothetical board with the pawn stopped halfway.
+
+Promotions, en passant, and castling remain unsupported. In particular, a pawn
+move to the last rank is omitted entirely until `Move` can record a promotion
+piece. Pawns already on an end rank in a study position produce no moves.
+An en passant target recorded in FEN does not yet enable that capture. The
+`ordinary` label marks this incomplete move list; an empty list still cannot
+be used to declare checkmate or stalemate.
+
+Move generation continues to leave the position unchanged. Applying moves,
+including updating clocks and other position fields, remains a separate lesson.
 
 ## Build and try it
 
@@ -366,4 +415,6 @@ the position.
 Move-generation tests cover both sides, ordinary piece patterns, captures,
 pins, check evasions, king safety after captures, and inspection without
 changing any position fields. They also check missing kings and the deliberate
-exclusion of pawn moves and castling.
+exclusion of castling. Pawn tests cover both colors, blocked advances, starting
+ranks, captures, board edges, pins, check evasions, and the deliberate omission
+of promotions and en passant. The starting-position test now expects 20 moves.

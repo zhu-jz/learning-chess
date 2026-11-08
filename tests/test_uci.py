@@ -137,10 +137,28 @@ class UciTests(unittest.TestCase):
             self.fail("Timed out waiting for moves")
         self.assertIsNotNone(line)
         words = line.split()
-        self.assertEqual(words[:4], ["info", "string", "moves", "non-pawn"])
+        self.assertEqual(words[:4], ["info", "string", "moves", "ordinary"])
         moves = words[4:]
         self.assertEqual(len(moves), len(set(moves)), "Duplicate moves")
         return moves
+
+    def expect_pawn_moves_both_colors(self, pieces, source, targets):
+        # Reflect ranks and exchange colors to exercise the same rule for Black.
+        def reflect(square):
+            return square[0] + str(9 - int(square[1]))
+
+        for side in ["w", "b"]:
+            board = pieces
+            start = source
+            destinations = targets.split()
+            if side == "b":
+                board = {reflect(square): piece.swapcase() for square, piece in pieces.items()}
+                start = reflect(source)
+                destinations = [reflect(square) for square in destinations]
+            with self.subTest(side=side, pieces=board, source=start):
+                self.send("position fen " + fen_with_pieces(board, side) + "\n")
+                actual = [move for move in self.read_moves() if move[:2] == start]
+                self.assertCountEqual(actual, [start + square for square in destinations])
 
     def test_handshake_while_input_stays_open(self):
         self.send("uci\n")
@@ -402,12 +420,18 @@ class UciTests(unittest.TestCase):
         self.send("quit\n")
         self.expect_exit()
 
-    def test_starting_non_pawn_moves_and_position_preservation(self):
+    def test_starting_moves_and_position_preservation(self):
+        white_moves = ["b1a3", "b1c3", "g1f3", "g1h3"]
+        black_moves = []
+        for file in "abcdefgh":
+            white_moves += [file + "2" + file + "3", file + "2" + file + "4"]
+            black_moves += [file + "7" + file + "5", file + "7" + file + "6"]
+        black_moves += ["b8a6", "b8c6", "g8f6", "g8h6"]
         for _ in range(2):
-            self.assertEqual(self.read_moves(), ["b1a3", "b1c3", "g1f3", "g1h3"])
+            self.assertEqual(self.read_moves(), white_moves)
             self.expect_position(START_POSITION)
         self.send("position fen " + START_FEN.replace(" w ", " b ") + "\n")
-        self.assertEqual(self.read_moves(), ["b8a6", "b8c6", "g8f6", "g8h6"])
+        self.assertEqual(self.read_moves(), black_moves)
         self.send("position fen " + SAMPLE_FEN + "\n")
         self.read_moves()
         self.expect_position(SAMPLE_POSITION)
@@ -505,9 +529,76 @@ class UciTests(unittest.TestCase):
         moves = self.read_moves()
         self.assertNotIn("e1g1", moves)
         self.assertNotIn("e1c1", moves)
-        # No non-pawn moves does not mean no legal moves: a2a3 remains possible.
+        # The king has no moves, but the pawn can still advance.
         self.send("position fen 8/8/8/8/8/6k1/P4q2/7K w - - 0 1\n")
-        self.assertEqual(self.read_moves(), [])
+        self.assertEqual(self.read_moves(), ["a2a3", "a2a4"])
+        self.send("quit\n")
+        self.expect_exit()
+
+    def test_pawn_advances_and_ordinary_captures(self):
+        cases = [
+            ({"e2": "P"}, "e2", "e3 e4"),
+            ({"e2": "P", "e3": "N"}, "e2", ""),
+            ({"e2": "P", "e3": "n"}, "e2", ""),
+            ({"e2": "P", "e4": "N"}, "e2", "e3"),
+            ({"e2": "P", "e4": "n"}, "e2", "e3"),
+            ({"e2": "P", "d3": "n", "f3": "n"}, "e2", "d3 e3 f3 e4"),
+            ({"e2": "P", "d3": "P", "f3": "P"}, "e2", "e3 e4"),
+            ({"e2": "P", "e3": "n", "d3": "n", "f3": "n"}, "e2", "d3 f3"),
+            ({"e4": "P"}, "e4", "e5"),
+            ({"e5": "P", "d4": "n", "e4": "n", "f4": "n"}, "e5", "e6"),
+        ]
+        for pieces, source, targets in cases:
+            board = {"h1": "K", "h8": "k"}
+            board.update(pieces)
+            self.expect_pawn_moves_both_colors(board, source, targets)
+        self.send("quit\n")
+        self.expect_exit()
+
+    def test_pawn_edges_and_promotion_exclusion(self):
+        cases = [
+            ({"a2": "P", "b3": "n", "h2": "n"}, "a2", "a3 a4 b3"),
+            ({"h2": "P", "g3": "b", "a4": "n"}, "h2", "h3 h4 g3"),
+            ({"e6": "P"}, "e6", "e7"),
+            ({"e7": "P", "d8": "n", "f8": "n"}, "e7", ""),
+            ({"a1": "P"}, "a1", ""),
+            ({"a8": "P"}, "a8", ""),
+        ]
+        for pieces, source, targets in cases:
+            board = {"h1": "K", "h8": "k"}
+            board.update(pieces)
+            self.expect_pawn_moves_both_colors(board, source, targets)
+        # A pawn must not capture the opposing king, even in a study position.
+        self.expect_pawn_moves_both_colors({"h1": "K", "d3": "k", "e2": "P"},
+                                          "e2", "e3 e4")
+        self.send("quit\n")
+        self.expect_exit()
+
+    def test_pawn_pins_and_check_evasions(self):
+        cases = [
+            # Advances keep the rook's line blocked; a diagonal capture opens it.
+            ({"e1": "K", "a8": "k", "e8": "r", "e2": "P", "d3": "b"},
+             "e2", "e3 e4"),
+            # This diagonal pin permits capturing the bishop, but no advance.
+            ({"c1": "K", "a8": "k", "e3": "b", "d2": "P"}, "d2", "e3"),
+            # Only the final square must block check, not the square crossed.
+            ({"e4": "K", "a8": "k", "a4": "r", "d2": "P"}, "d2", "d4"),
+            ({"e3": "K", "a8": "k", "a3": "r", "d2": "P"}, "d2", "d3"),
+            ({"e1": "K", "a8": "k", "d3": "n", "e2": "P"}, "e2", "d3"),
+            ({"e1": "K", "a8": "k", "e8": "r", "a2": "P"}, "a2", ""),
+        ]
+        for board, source, targets in cases:
+            self.expect_pawn_moves_both_colors(board, source, targets)
+        self.send("quit\n")
+        self.expect_exit()
+
+    def test_en_passant_remains_excluded(self):
+        cases = [(SAMPLE_FEN, "e5", "e5e6"),
+                 ("r3k2r/8/8/8/3Pp3/8/8/R3K2R b Kq d3 0 42", "e4", "e4e3")]
+        for fen, source, expected in cases:
+            self.send("position fen " + fen + "\n")
+            self.assertEqual([move for move in self.read_moves() if move[:2] == source],
+                             [expected])
         self.send("quit\n")
         self.expect_exit()
 

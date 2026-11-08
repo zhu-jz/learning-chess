@@ -343,9 +343,43 @@ static int move_keeps_king_safe(const struct Position *position, struct Move mov
     return is_in_check(&next, position->side_to_move) == 0;
 }
 
+/* The caller has already excluded friendly targets and king captures.
+   Unlike attacks, pawn moves include forward advances into empty squares. */
+static int pawn_can_move(const struct Position *position, int from, int to)
+{
+    int from_rank = from / 8;
+    int to_rank = to / 8;
+    int direction;
+    int starting_rank;
+    if (position->board[from] == WHITE_PAWN) {
+        direction = 1;
+        starting_rank = 1;
+    } else {
+        direction = -1;
+        starting_rank = 6;
+    }
+
+    /* Pawns cannot start on an end rank. Arriving there needs promotion,
+       which the current Move structure does not yet represent. */
+    if (from_rank == 0 || from_rank == 7 || to_rank == 0 || to_rank == 7)
+        return 0;
+
+    int target = position->board[to];
+    if (from % 8 != to % 8)
+        return target != EMPTY && piece_attacks_square(position, from, to);
+
+    if (target != EMPTY)
+        return 0;
+    if (to_rank - from_rank == direction)
+        return 1;
+    if (from_rank == starting_rank && to_rank - from_rank == 2 * direction)
+        return position->board[from + direction * 8] == EMPTY;
+    return 0;
+}
+
 /* The caller supplies room for MAX_MOVES entries. Return -1 if either color
-   lacks exactly one king. Pawns and castling are left for later lessons. */
-static int generate_non_pawn_moves(const struct Position *position, struct Move moves[])
+   lacks exactly one king. Promotions, en passant, and castling come later. */
+static int generate_moves(const struct Position *position, struct Move moves[])
 {
     if (find_king(position, WHITE) == -1 || find_king(position, BLACK) == -1)
         return -1;
@@ -355,9 +389,6 @@ static int generate_non_pawn_moves(const struct Position *position, struct Move 
         int piece = position->board[from];
         if (piece_color(piece) != position->side_to_move)
             continue;
-        if (piece == WHITE_PAWN || piece == BLACK_PAWN)
-            continue;
-
         for (int to = 0; to < 64; to++) {
             int target = position->board[to];
             if (piece_color(target) == position->side_to_move)
@@ -365,8 +396,13 @@ static int generate_non_pawn_moves(const struct Position *position, struct Move 
             /* Kings are never captured; checkmate is determined from legal moves. */
             if (target == WHITE_KING || target == BLACK_KING)
                 continue;
-            if (!piece_attacks_square(position, from, to))
-                continue;
+            if (piece == WHITE_PAWN || piece == BLACK_PAWN) {
+                if (!pawn_can_move(position, from, to))
+                    continue;
+            } else {
+                if (!piece_attacks_square(position, from, to))
+                    continue;
+            }
 
             struct Move move;
             move.from = from;
@@ -388,13 +424,13 @@ static void read_moves_command(const struct Position *position)
     }
 
     struct Move moves[MAX_MOVES];
-    int count = generate_non_pawn_moves(position, moves);
+    int count = generate_moves(position, moves);
     if (count == -1) {
         puts("info string Cannot generate moves: expected exactly one king of each color");
         return;
     }
 
-    printf("info string moves non-pawn");
+    printf("info string moves ordinary");
     for (int i = 0; i < count; i++) {
         int from = moves[i].from;
         int to = moves[i].to;
