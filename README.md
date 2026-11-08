@@ -387,15 +387,15 @@ position fen 7k/4P3/8/8/8/8/8/7K w - - 9 12
 moves
 ```
 
-The response is:
+At the lesson 8 commit, the response was:
 
 ```text
 info string moves partial h1g1 h1g2 h1h2 e7e8n e7e8b e7e8r e7e8q
 ```
 
 Lesson 8 introduced the `partial` label because en passant and castling were
-still missing. Lesson 9 adds en passant; castling and complete move application
-remain for later lessons.
+still missing. Lessons 9 and 10 add those moves. Complete move application
+remains a later lesson.
 
 `MAX_MOVES` is now `64 * 64 * 4`: at most four choices per pair of squares.
 This simple bound continues to accommodate unusual study positions. It uses
@@ -436,7 +436,7 @@ position fen 7k/8/8/3pP3/8/8/8/7K w - d6 0 1
 moves
 ```
 
-The response is:
+At the lesson 9 commit, the response was:
 
 ```text
 info string moves partial h1g1 h1g2 h1h2 e5d6 e5e6
@@ -452,8 +452,52 @@ ordinary capture, but it never removes a second piece as en passant.
 En passant is available only immediately after the opposing double advance.
 Maintaining that lifetime by setting and clearing the target belongs to the
 later move-application lesson. For now, loading a FEN without the target removes
-the opportunity. Castling remains unsupported, so the move list stays labelled
-`partial`.
+the opportunity. Lesson 9 kept the `partial` label until castling was added.
+
+## Lesson 10: standard castling
+
+Castling moves the king two squares towards a rook, then places that rook on
+the square the king crossed. We support standard chess: White's king starts
+on e1 and Black's on e8, with rooks on the a- or h-file. Chess960 is outside
+this project's current scope.
+
+`Move` gains `rook_from` and `rook_to`, both `-1` for other moves. For example,
+White's kingside castle records king movement e1-g1 and rook movement h1-f1.
+The printed move is simply `e1g1`. The other castles print as `e1c1`, `e8g8`,
+and `e8c8`.
+
+`prepare_castling_move` checks the corresponding FEN right, the king's home
+square, and a matching rook on its home square. Every square between them
+must be empty. It then checks the king's starting square and tests the crossing
+square on a copy with the king moved and the rook still at home. If these
+checks pass, it records the rook movement. The generator's usual
+`move_keeps_king_safe` call checks the final board, now with both pieces moved.
+
+The three king squares must be safe. The rook's square may be attacked.
+On the queenside, b1/b8 must be empty but need not be safe, since the king
+crosses d1/d8 and finishes on c1/c8. These distinctions follow
+[FIDE's castling rules, article 3.8.2](https://handbook.fide.com/chapter/e012023).
+
+Try:
+
+```text
+position fen r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1
+moves
+```
+
+The list contains 26 moves, including `e1c1` and `e1g1`. Changing the active
+color to `b` gives Black's 26 moves, including `e8c8` and `e8g8`.
+
+All standard move types are now represented, so responses begin with
+`info string moves legal`. This describes moves from a valid standard-chess
+position. The FEN reader still permits study boards that could not arise in
+a game, and move generation is not a complete position validator.
+
+Generation remains read-only: castling rights, clocks, and the actual board
+do not change when `moves` is called. As with en passant history, the engine
+trusts the supplied FEN rights. Updating those rights when a king or rook moves,
+or a rook is captured, belongs to the next lesson on applying moves. This
+lesson adds neither game-result reporting nor search.
 
 ## Build and try it
 
@@ -509,8 +553,8 @@ adjacent kings, missing or duplicate kings, and inspection without changing
 the position.
 Move-generation tests cover both sides, ordinary piece patterns, captures,
 pins, check evasions, king safety after captures, and inspection without
-changing any position fields. They also check missing kings and the deliberate
-exclusion of castling. Pawn tests cover both colors, blocked advances, starting
+changing any position fields. They also check missing kings. Pawn tests cover
+both colors, blocked advances, starting
 ranks, captures, board edges, pins, and check evasions. Promotion tests cover
 every choice for both colors, forward and
 capture promotions, blockers, king safety, move suffixes, and preservation of
@@ -518,3 +562,6 @@ the original position. The starting-position test continues to expect 20 moves.
 En passant tests cover both colors, both capture directions, edge files,
 inconsistent FEN targets, discovered rook and bishop attacks, check evasions,
 and preservation of the original position.
+Castling tests cover both sides and colors, individual rights, home-piece
+placement, every intervening square, attacks along the king's path, attacked
+rooks, and preservation of the position.

@@ -46,7 +46,7 @@ Halfmove clock: 17
 Fullmove number: 42""".splitlines()
 
 
-def fen_with_pieces(pieces, side="w", en_passant="-"):
+def fen_with_pieces(pieces, side="w", en_passant="-", castling="-"):
     """Build small attack fixtures from a mapping such as {"d4": "N"}."""
     rows = []
     for rank in "87654321":
@@ -64,7 +64,7 @@ def fen_with_pieces(pieces, side="w", en_passant="-"):
         if empty:
             row += str(empty)
         rows.append(row)
-    return "/".join(rows) + f" {side} - {en_passant} 0 1"
+    return "/".join(rows) + f" {side} {castling} {en_passant} 0 1"
 
 
 class UciTests(unittest.TestCase):
@@ -137,7 +137,7 @@ class UciTests(unittest.TestCase):
             self.fail("Timed out waiting for moves")
         self.assertIsNotNone(line)
         words = line.split()
-        self.assertEqual(words[:4], ["info", "string", "moves", "partial"])
+        self.assertEqual(words[:4], ["info", "string", "moves", "legal"])
         moves = words[4:]
         self.assertEqual(len(moves), len(set(moves)), "Duplicate moves")
         return moves
@@ -519,7 +519,7 @@ class UciTests(unittest.TestCase):
         self.send("quit\n")
         self.expect_exit()
 
-    def test_moves_errors_and_incomplete_scope(self):
+    def test_moves_errors_and_pawn_only_mobility(self):
         for pieces in [{}, {"a1": "K"}, {"a8": "k"},
                        {"a1": "K", "b1": "K", "a8": "k"},
                        {"a8": "k", "b8": "k", "a1": "K"}]:
@@ -530,8 +530,8 @@ class UciTests(unittest.TestCase):
         self.expect_position(START_POSITION)
         self.send("position fen r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1\n")
         moves = self.read_moves()
-        self.assertNotIn("e1g1", moves)
-        self.assertNotIn("e1c1", moves)
+        self.assertIn("e1g1", moves)
+        self.assertIn("e1c1", moves)
         # The king has no moves, but the pawn can still advance.
         self.send("position fen 8/8/8/8/8/6k1/P4q2/7K w - - 0 1\n")
         self.assertEqual(self.read_moves(), ["a2a3", "a2a4"])
@@ -735,6 +735,112 @@ class UciTests(unittest.TestCase):
         ]
         for board, source, targets, en_passant in cases:
             self.expect_pawn_moves_both_colors(board, source, targets, en_passant)
+        self.send("quit\n")
+        self.expect_exit()
+
+    def expect_castles_both_colors(self, pieces, rights, expected):
+        def reflect(square):
+            return square[0] + str(9 - int(square[1]))
+
+        for side in ["w", "b"]:
+            board = pieces
+            castling = rights
+            castles = ["e1c1", "e1g1"]
+            wanted = expected.split()
+            if side == "b":
+                board = {reflect(square): piece.swapcase() for square, piece in pieces.items()}
+                castling = rights.swapcase()
+                castles = ["e8c8", "e8g8"]
+                wanted = [reflect(move[:2]) + reflect(move[2:]) for move in wanted]
+            with self.subTest(side=side, pieces=board, rights=castling):
+                self.send("position fen " + fen_with_pieces(board, side, castling=castling) + "\n")
+                actual = [move for move in self.read_moves() if move in castles]
+                self.assertCountEqual(actual, wanted)
+
+    def test_castling_requires_the_matching_right(self):
+        board = {"a1": "R", "e1": "K", "h1": "R", "e8": "k"}
+        for rights, expected in [("-", ""), ("K", "e1g1"), ("Q", "e1c1"),
+                                 ("KQ", "e1c1 e1g1"), ("kq", "")]:
+            self.expect_castles_both_colors(board, rights, expected)
+        self.send("quit\n")
+        self.expect_exit()
+
+    def test_castling_requires_home_pieces(self):
+        base = {"a1": "R", "e1": "K", "h1": "R", "e8": "k"}
+        for square, replacement, expected in [("a1", None, "e1g1"),
+                                               ("h1", None, "e1c1"),
+                                               ("a1", "B", "e1g1"),
+                                               ("h1", "B", "e1c1"),
+                                               ("a1", "r", ""),
+                                               ("h1", "r", "")]:
+            board = base.copy()
+            if replacement is None:
+                del board[square]
+            else:
+                board[square] = replacement
+            self.expect_castles_both_colors(board, "KQ", expected)
+        # Rights do not allow a displaced king to make a two-square move.
+        for side, board, rights, forbidden in [
+            ("w", {"a1": "R", "d1": "K", "h1": "R", "e8": "k"}, "KQ", ["d1b1", "d1f1"]),
+            ("b", {"a8": "r", "d8": "k", "h8": "r", "e1": "K"}, "kq", ["d8b8", "d8f8"]),
+        ]:
+            self.send("position fen " + fen_with_pieces(board, side, castling=rights) + "\n")
+            moves = self.read_moves()
+            for move in forbidden:
+                self.assertNotIn(move, moves)
+        self.send("quit\n")
+        self.expect_exit()
+
+    def test_castling_requires_every_path_square_empty(self):
+        base = {"a1": "R", "e1": "K", "h1": "R", "e8": "k"}
+        for square in ["b1", "c1", "d1", "f1", "g1"]:
+            for piece in ["N", "n"]:
+                board = base.copy()
+                board[square] = piece
+                expected = "e1g1" if square in ["b1", "c1", "d1"] else "e1c1"
+                self.expect_castles_both_colors(board, "KQ", expected)
+        self.send("quit\n")
+        self.expect_exit()
+
+    def test_castling_attack_restrictions_apply_to_king_path(self):
+        cases = [("e8", ""), ("f8", "e1c1"), ("g8", "e1c1"),
+                 ("d8", "e1g1"), ("c8", "e1g1"),
+                 ("a8", "e1c1 e1g1"), ("b8", "e1c1 e1g1"), ("h8", "e1c1 e1g1")]
+        for square, expected in cases:
+            # Keep the opposing king off the testing rook's file.
+            king_square = "e7" if square[0] == "d" else "d7"
+            board = {"a1": "R", "e1": "K", "h1": "R", king_square: "k", square: "r"}
+            self.expect_castles_both_colors(board, "KQ", expected)
+        self.send("quit\n")
+        self.expect_exit()
+
+    def test_castling_respects_pawns_kings_and_pinned_attackers(self):
+        self.expect_castles_both_colors(
+            {"a1": "R", "e1": "K", "h1": "R", "a8": "k", "e2": "p"}, "KQ", "")
+        self.expect_castles_both_colors(
+            {"a1": "R", "e1": "K", "h1": "R", "g2": "k"}, "KQ", "e1c1")
+        # The pinned knight still attacks d1; the rook on f1 also blocks kingside.
+        self.expect_castles_both_colors(
+            {"a1": "R", "e1": "K", "h1": "R", "f1": "R", "f2": "n", "f8": "k"},
+            "KQ", "")
+        self.send("quit\n")
+        self.expect_exit()
+
+    def test_castling_generation_preserves_position(self):
+        self.send("position fen r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 17 42\n")
+        for _ in range(2):
+            moves = self.read_moves()
+            self.assertEqual(len(moves), 26)
+            self.assertIn("e1c1", moves)
+            self.assertIn("e1g1", moves)
+            self.expect_position([
+                "8 r . . . k . . r", "7 . . . . . . . .",
+                "6 . . . . . . . .", "5 . . . . . . . .",
+                "4 . . . . . . . .", "3 . . . . . . . .",
+                "2 . . . . . . . .", "1 R . . . K . . R",
+                "  a b c d e f g h", "Side to move: White", "Castling: KQkq",
+                "En passant: -", "Halfmove clock: 17", "Fullmove number: 42",
+            ])
         self.send("quit\n")
         self.expect_exit()
 

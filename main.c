@@ -33,6 +33,8 @@ struct Move {
     int to;
     int promotion;              /* Colored piece to place, or EMPTY for none. */
     int en_passant_capture_square; /* Captured pawn's square, or -1. */
+    int rook_from;              /* Rook squares for castling, or -1. */
+    int rook_to;
 };
 
 /* Each pair of squares can produce at most four promotion choices. The
@@ -347,6 +349,10 @@ static int move_keeps_king_safe(const struct Position *position, struct Move mov
         next.board[move.en_passant_capture_square] = EMPTY;
     if (move.promotion != EMPTY)
         next.board[move.to] = move.promotion;
+    if (move.rook_from != -1) {
+        next.board[move.rook_to] = next.board[move.rook_from];
+        next.board[move.rook_from] = EMPTY;
+    }
     return is_in_check(&next, position->side_to_move) == 0;
 }
 
@@ -414,8 +420,74 @@ static int find_en_passant_capture(const struct Position *position, int from, in
     return captured_square;
 }
 
+/* Prepare standard castling after checking the right, path, and the king's
+   starting and crossing squares. The caller tests the final board as usual. */
+static int prepare_castling_move(const struct Position *position, struct Move *move)
+{
+    int home_rank;
+    int rook;
+    int kingside_right;
+    int queenside_right;
+    int king = position->board[move->from];
+    if (king == WHITE_KING) {
+        home_rank = 0;
+        rook = WHITE_ROOK;
+        kingside_right = WHITE_KINGSIDE;
+        queenside_right = WHITE_QUEENSIDE;
+    } else if (king == BLACK_KING) {
+        home_rank = 7;
+        rook = BLACK_ROOK;
+        kingside_right = BLACK_KINGSIDE;
+        queenside_right = BLACK_QUEENSIDE;
+    } else {
+        return 0;
+    }
+
+    int home = home_rank * 8;
+    if (move->from != home + 4)
+        return 0;
+
+    int right;
+    int rook_from;
+    int rook_to;
+    int step;
+    if (move->to == home + 6) {
+        right = kingside_right;
+        rook_from = home + 7;
+        rook_to = home + 5;
+        step = 1;
+    } else if (move->to == home + 2) {
+        right = queenside_right;
+        rook_from = home;
+        rook_to = home + 3;
+        step = -1;
+    } else {
+        return 0;
+    }
+
+    if (!position->castling[right] || position->board[rook_from] != rook)
+        return 0;
+    /* Queenside also requires b1/b8 to be empty, though the king skips it. */
+    for (int square = move->from + step; square != rook_from; square += step) {
+        if (position->board[square] != EMPTY)
+            return 0;
+    }
+    if (is_in_check(position, position->side_to_move) != 0)
+        return 0;
+
+    /* Test the crossing square with the king moved and the rook still home. */
+    struct Move crossing = *move;
+    crossing.to = move->from + step;
+    if (!move_keeps_king_safe(position, crossing))
+        return 0;
+
+    move->rook_from = rook_from;
+    move->rook_to = rook_to;
+    return 1;
+}
+
 /* The caller supplies room for MAX_MOVES entries. Return -1 if either color
-   lacks exactly one king. Castling comes in a later lesson. */
+   lacks exactly one king. This generator supports standard chess, not Chess960. */
 static int generate_moves(const struct Position *position, struct Move moves[])
 {
     const int white_promotions[4] = { WHITE_KNIGHT, WHITE_BISHOP, WHITE_ROOK, WHITE_QUEEN };
@@ -436,21 +508,24 @@ static int generate_moves(const struct Position *position, struct Move moves[])
             /* Kings are never captured; checkmate is determined from legal moves. */
             if (target == WHITE_KING || target == BLACK_KING)
                 continue;
-            int en_passant_capture = -1;
-            if (piece == WHITE_PAWN || piece == BLACK_PAWN) {
-                en_passant_capture = find_en_passant_capture(position, from, to);
-                if (!pawn_can_move(position, from, to) && en_passant_capture == -1)
-                    continue;
-            } else {
-                if (!piece_attacks_square(position, from, to))
-                    continue;
-            }
-
             struct Move move;
             move.from = from;
             move.to = to;
             move.promotion = EMPTY;
-            move.en_passant_capture_square = en_passant_capture;
+            move.en_passant_capture_square = -1;
+            move.rook_from = -1;
+            move.rook_to = -1;
+
+            if (piece == WHITE_PAWN || piece == BLACK_PAWN) {
+                move.en_passant_capture_square = find_en_passant_capture(position, from, to);
+                if (!pawn_can_move(position, from, to) && move.en_passant_capture_square == -1)
+                    continue;
+            } else {
+                if (!piece_attacks_square(position, from, to)) {
+                    if (!prepare_castling_move(position, &move))
+                        continue;
+                }
+            }
 
             if ((piece == WHITE_PAWN && to / 8 == 7)
                 || (piece == BLACK_PAWN && to / 8 == 0)) {
@@ -491,7 +566,7 @@ static void read_moves_command(const struct Position *position)
         return;
     }
 
-    printf("info string moves partial");
+    printf("info string moves legal");
     for (int i = 0; i < count; i++) {
         int from = moves[i].from;
         int to = moves[i].to;
