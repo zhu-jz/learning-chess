@@ -32,6 +32,7 @@ struct Move {
     int from;
     int to;
     int promotion;              /* Colored piece to place, or EMPTY for none. */
+    int en_passant_capture_square; /* Captured pawn's square, or -1. */
 };
 
 /* Each pair of squares can produce at most four promotion choices. The
@@ -342,6 +343,8 @@ static int move_keeps_king_safe(const struct Position *position, struct Move mov
     struct Position next = *position;
     next.board[move.to] = next.board[move.from];
     next.board[move.from] = EMPTY;
+    if (move.en_passant_capture_square != -1)
+        next.board[move.en_passant_capture_square] = EMPTY;
     if (move.promotion != EMPTY)
         next.board[move.to] = move.promotion;
     return is_in_check(&next, position->side_to_move) == 0;
@@ -380,8 +383,39 @@ static int pawn_can_move(const struct Position *position, int from, int to)
     return 0;
 }
 
+/* Return the captured pawn's square, or -1 if this is not an en passant move.
+   The FEN target alone is not enough: the board must support the capture. */
+static int find_en_passant_capture(const struct Position *position, int from, int to)
+{
+    if (to != position->en_passant_square || position->board[to] != EMPTY)
+        return -1;
+
+    int piece = position->board[from];
+    int captured_square;
+    int captured_pawn;
+    if (piece == WHITE_PAWN) {
+        if (from / 8 != 4 || to / 8 != 5)
+            return -1;
+        captured_square = to - 8;
+        captured_pawn = BLACK_PAWN;
+    } else if (piece == BLACK_PAWN) {
+        if (from / 8 != 3 || to / 8 != 2)
+            return -1;
+        captured_square = to + 8;
+        captured_pawn = WHITE_PAWN;
+    } else {
+        return -1;
+    }
+
+    if (!piece_attacks_square(position, from, to))
+        return -1;
+    if (position->board[captured_square] != captured_pawn)
+        return -1;
+    return captured_square;
+}
+
 /* The caller supplies room for MAX_MOVES entries. Return -1 if either color
-   lacks exactly one king. En passant and castling come later. */
+   lacks exactly one king. Castling comes in a later lesson. */
 static int generate_moves(const struct Position *position, struct Move moves[])
 {
     const int white_promotions[4] = { WHITE_KNIGHT, WHITE_BISHOP, WHITE_ROOK, WHITE_QUEEN };
@@ -402,8 +436,10 @@ static int generate_moves(const struct Position *position, struct Move moves[])
             /* Kings are never captured; checkmate is determined from legal moves. */
             if (target == WHITE_KING || target == BLACK_KING)
                 continue;
+            int en_passant_capture = -1;
             if (piece == WHITE_PAWN || piece == BLACK_PAWN) {
-                if (!pawn_can_move(position, from, to))
+                en_passant_capture = find_en_passant_capture(position, from, to);
+                if (!pawn_can_move(position, from, to) && en_passant_capture == -1)
                     continue;
             } else {
                 if (!piece_attacks_square(position, from, to))
@@ -414,6 +450,7 @@ static int generate_moves(const struct Position *position, struct Move moves[])
             move.from = from;
             move.to = to;
             move.promotion = EMPTY;
+            move.en_passant_capture_square = en_passant_capture;
 
             if ((piece == WHITE_PAWN && to / 8 == 7)
                 || (piece == BLACK_PAWN && to / 8 == 0)) {

@@ -46,7 +46,7 @@ Halfmove clock: 17
 Fullmove number: 42""".splitlines()
 
 
-def fen_with_pieces(pieces, side="w"):
+def fen_with_pieces(pieces, side="w", en_passant="-"):
     """Build small attack fixtures from a mapping such as {"d4": "N"}."""
     rows = []
     for rank in "87654321":
@@ -64,7 +64,7 @@ def fen_with_pieces(pieces, side="w"):
         if empty:
             row += str(empty)
         rows.append(row)
-    return "/".join(rows) + f" {side} - - 0 1"
+    return "/".join(rows) + f" {side} - {en_passant} 0 1"
 
 
 class UciTests(unittest.TestCase):
@@ -142,7 +142,7 @@ class UciTests(unittest.TestCase):
         self.assertEqual(len(moves), len(set(moves)), "Duplicate moves")
         return moves
 
-    def expect_pawn_moves_both_colors(self, pieces, source, targets):
+    def expect_pawn_moves_both_colors(self, pieces, source, targets, en_passant="-"):
         # Reflect ranks and exchange colors to exercise the same rule for Black.
         def reflect(square):
             return square[0] + str(9 - int(square[1])) + square[2:]
@@ -150,13 +150,16 @@ class UciTests(unittest.TestCase):
         for side in ["w", "b"]:
             board = pieces
             start = source
+            target_square = en_passant
             destinations = targets.split()
             if side == "b":
                 board = {reflect(square): piece.swapcase() for square, piece in pieces.items()}
                 start = reflect(source)
                 destinations = [reflect(square) for square in destinations]
+                if en_passant != "-":
+                    target_square = reflect(en_passant)
             with self.subTest(side=side, pieces=board, source=start):
-                self.send("position fen " + fen_with_pieces(board, side) + "\n")
+                self.send("position fen " + fen_with_pieces(board, side, target_square) + "\n")
                 actual = [move for move in self.read_moves() if move[:2] == start]
                 self.assertCountEqual(actual, [start + square for square in destinations])
 
@@ -648,13 +651,90 @@ class UciTests(unittest.TestCase):
         self.send("quit\n")
         self.expect_exit()
 
-    def test_en_passant_remains_excluded(self):
-        cases = [(SAMPLE_FEN, "e5", "e5e6"),
-                 ("r3k2r/8/8/8/3Pp3/8/8/R3K2R b Kq d3 0 42", "e4", "e4e3")]
+    def test_en_passant_captures_and_position_preservation(self):
+        cases = [(SAMPLE_FEN, "e5", ["e5d6", "e5e6"]),
+                 ("r3k2r/8/8/8/3Pp3/8/8/R3K2R b Kq d3 0 42", "e4", ["e4d3", "e4e3"])]
         for fen, source, expected in cases:
             self.send("position fen " + fen + "\n")
             self.assertEqual([move for move in self.read_moves() if move[:2] == source],
-                             [expected])
+                             expected)
+        self.send("position fen " + SAMPLE_FEN + "\n")
+        for _ in range(2):
+            self.assertIn("e5d6", self.read_moves())
+            self.expect_position(SAMPLE_POSITION)
+        # Reloading the same board without the target removes the capture.
+        self.send("position fen " + SAMPLE_FEN.replace(" d6 ", " - ") + "\n")
+        self.assertNotIn("e5d6", self.read_moves())
+        self.send("quit\n")
+        self.expect_exit()
+
+    def test_en_passant_from_both_sides_and_board_edges(self):
+        board = {"h1": "K", "h8": "k", "c5": "P", "e5": "P", "d5": "p"}
+        self.expect_pawn_moves_both_colors(board, "c5", "c6 d6", "d6")
+        self.expect_pawn_moves_both_colors(board, "e5", "d6 e6", "d6")
+        self.expect_pawn_moves_both_colors(
+            {"h1": "K", "h8": "k", "a5": "P", "b5": "p"}, "a5", "a6 b6", "b6")
+        self.expect_pawn_moves_both_colors(
+            {"a1": "K", "a8": "k", "h5": "P", "g5": "p"}, "h5", "g6 h6", "g6")
+        # A neighboring array index across the board edge is not a neighbor file.
+        self.expect_pawn_moves_both_colors(
+            {"a1": "K", "a8": "k", "h5": "P", "a5": "p"}, "h5", "h6", "a6")
+        self.send("quit\n")
+        self.expect_exit()
+
+    def test_en_passant_requires_a_matching_board(self):
+        cases = [
+            ({"e5": "P"}, "e5", "e6", "d6"),
+            ({"e5": "P", "d5": "P"}, "e5", "e6", "d6"),
+            ({"e5": "P", "d5": "n"}, "e5", "e6", "d6"),
+            ({"e5": "P", "d5": "p", "d6": "P"}, "e5", "e6", "d6"),
+            # Occupied enemy targets remain ordinary diagonal captures.
+            ({"e5": "P", "d5": "p", "d6": "n"}, "e5", "d6 e6", "d6"),
+            ({"e5": "P", "d5": "p"}, "e5", "e6", "-"),
+            ({"e5": "P", "d5": "p"}, "e5", "e6", "f6"),
+            ({"e4": "P", "d4": "p"}, "e4", "e5", "d6"),
+        ]
+        for pieces, source, targets, en_passant in cases:
+            board = {"h1": "K", "h8": "k"}
+            board.update(pieces)
+            self.expect_pawn_moves_both_colors(board, source, targets, en_passant)
+        # Capturing the knight on d6 must not also remove the checking pawn d5.
+        self.expect_pawn_moves_both_colors(
+            {"e4": "K", "a8": "k", "e5": "P", "d5": "p", "d6": "n"},
+            "e5", "", "d6")
+        self.send("quit\n")
+        self.expect_exit()
+
+    def test_en_passant_cannot_expose_the_king(self):
+        cases = [
+            # Removing both adjacent pawns opens the rook's horizontal line.
+            ({"h5": "K", "a8": "k", "a5": "r", "g5": "P", "f5": "p"},
+             "g5", "g6", "f6"),
+            # Vacating the capturing pawn's file exposes the king.
+            ({"e1": "K", "a8": "k", "e8": "r", "e5": "P", "d5": "p"},
+             "e5", "e6", "d6"),
+            # Removing the captured pawn opens a diagonal to the king.
+            ({"a2": "K", "h8": "k", "f7": "b", "e5": "P", "d5": "p"},
+             "e5", "e6", "d6"),
+        ]
+        for board, source, targets, en_passant in cases:
+            self.expect_pawn_moves_both_colors(board, source, targets, en_passant)
+        self.send("quit\n")
+        self.expect_exit()
+
+    def test_en_passant_can_answer_check(self):
+        cases = [
+            # Remove the pawn that is checking the king on e4.
+            ({"e4": "K", "a8": "k", "e5": "P", "d5": "p"}, "e5", "d6", "d6"),
+            # Interpose on d6 to block the bishop's check along e7-d6-c5.
+            ({"c5": "K", "a8": "k", "e7": "b", "e5": "P", "d5": "p"},
+             "e5", "d6", "d6"),
+            # Removing the checking pawn reveals a bishop behind it: still illegal.
+            ({"e4": "K", "a8": "k", "c6": "b", "e5": "P", "d5": "p"},
+             "e5", "", "d6"),
+        ]
+        for board, source, targets, en_passant in cases:
+            self.expect_pawn_moves_both_colors(board, source, targets, en_passant)
         self.send("quit\n")
         self.expect_exit()
 

@@ -393,15 +393,67 @@ The response is:
 info string moves partial h1g1 h1g2 h1h2 e7e8n e7e8b e7e8r e7e8q
 ```
 
-The label is now `partial`: en passant and castling remain unsupported, so an
-empty list still cannot establish checkmate or stalemate. Move application
-through UCI position commands will also be a separate lesson.
+Lesson 8 introduced the `partial` label because en passant and castling were
+still missing. Lesson 9 adds en passant; castling and complete move application
+remain for later lessons.
 
 `MAX_MOVES` is now `64 * 64 * 4`: at most four choices per pair of squares.
 This simple bound continues to accommodate unusual study positions. It uses
 more space than a practical chess engine needs, but its safety is easy to see.
 Choices currently appear in knight, bishop, rook, queen order; matching the
 reference's move ordering remains a later step toward search parity.
+
+## Lesson 9: en passant
+
+An en passant capture moves a pawn diagonally into an empty square and removes
+the opposing pawn beside its starting square. Unlike an ordinary capture, the
+captured piece is not on the destination. `Move` therefore gains an
+`en_passant_capture_square` field. It is `-1` for other moves, or the square of
+the pawn to remove for en passant.
+
+`find_en_passant_capture` checks that the destination matches the position's
+FEN target and is empty. White must move from rank 5 to rank 6; Black must move
+from rank 4 to rank 3. The pawn must attack the target diagonally, and an opposing
+pawn must occupy the square just behind it. The function returns that captured
+square, or `-1` when the conditions do not hold.
+
+The generator accepts either an ordinary pawn move or a valid en passant
+candidate. It records the extra capture square before calling
+`move_keeps_king_safe`. The copied board now changes in three places: the
+capturing pawn leaves its starting square, arrives at the target, and the
+captured pawn disappears. Only then does the code test for check.
+
+That order matters. Removing two pawns from a rank can uncover a rook's attack
+on the king. Removing the captured pawn can uncover a bishop's diagonal.
+Conversely, en passant can answer check by removing the checking pawn or by
+placing the capturing pawn between a sliding piece and the king. The existing
+attack detector handles all of these cases on the resulting board.
+
+Try:
+
+```text
+position fen 7k/8/8/3pP3/8/8/8/7K w - d6 0 1
+moves
+```
+
+The response is:
+
+```text
+info string moves partial h1g1 h1g2 h1h2 e5d6 e5e6
+```
+
+The en passant move is printed simply as `e5d6`, with no extra suffix. The
+inspection command still leaves the position unchanged, including its FEN
+target. The reader trusts that target as supplied history; it does not prove
+that the preceding move was a double pawn advance. The new board checks reject
+an absent or incorrect captured pawn. An occupied destination may still be an
+ordinary capture, but it never removes a second piece as en passant.
+
+En passant is available only immediately after the opposing double advance.
+Maintaining that lifetime by setting and clearing the target belongs to the
+later move-application lesson. For now, loading a FEN without the target removes
+the opportunity. Castling remains unsupported, so the move list stays labelled
+`partial`.
 
 ## Build and try it
 
@@ -459,7 +511,10 @@ Move-generation tests cover both sides, ordinary piece patterns, captures,
 pins, check evasions, king safety after captures, and inspection without
 changing any position fields. They also check missing kings and the deliberate
 exclusion of castling. Pawn tests cover both colors, blocked advances, starting
-ranks, captures, board edges, pins, check evasions, and the deliberate omission
-of en passant. Promotion tests cover every choice for both colors, forward and
+ranks, captures, board edges, pins, and check evasions. Promotion tests cover
+every choice for both colors, forward and
 capture promotions, blockers, king safety, move suffixes, and preservation of
 the original position. The starting-position test continues to expect 20 moves.
+En passant tests cover both colors, both capture directions, edge files,
+inconsistent FEN targets, discovered rook and bishop attacks, check evasions,
+and preservation of the original position.
