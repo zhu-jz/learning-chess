@@ -101,9 +101,9 @@ class UciTests(unittest.TestCase):
         self.engine.stdin.write(commands)
         self.engine.stdin.flush()
 
-    def expect(self, expected):
+    def expect(self, expected, timeout=TIMEOUT):
         try:
-            actual = self.output.get(timeout=TIMEOUT)
+            actual = self.output.get(timeout=timeout)
         except Empty:
             self.fail(f"Timed out waiting for {expected!r}")
         self.assertEqual(actual, expected)
@@ -136,6 +136,12 @@ class UciTests(unittest.TestCase):
         self.send(f"check {color}\n")
         answer = "yes" if expected else "no"
         self.expect(f"info string check {color} {answer}")
+
+    def expect_perft(self, depth, nodes):
+        self.send(f"perft {depth}\n")
+        self.expect(f"info string perft depth {depth} nodes {nodes}", timeout=60)
+        self.send("isready\n")
+        self.expect("readyok")
 
     def read_moves(self):
         self.send("moves\n")
@@ -976,6 +982,70 @@ class UciTests(unittest.TestCase):
                 "  a b c d e f g h", "Side to move: White", "Castling: KQkq",
                 "En passant: -", "Halfmove clock: 17", "Fullmove number: 42",
             ])
+        self.send("quit\n")
+        self.expect_exit()
+
+    def test_perft_starting_position(self):
+        for depth, nodes in [(0, 1), (1, 20), (2, 400), (3, 8902), (4, 197281)]:
+            with self.subTest(depth=depth):
+                self.expect_perft(depth, nodes)
+                self.expect_position(START_POSITION)
+        self.send("quit\n")
+        self.expect_exit()
+
+    def test_perft_reference_positions(self):
+        # Exact fixtures from minifish-reference-2026-11-05/test_engine.py.
+        cases = [
+            ("castling", "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1", 3, 97862),
+            ("en passant", "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1", 4, 43238),
+            ("promotion", "r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1", 3, 9467),
+        ]
+        for name, fen, depth, nodes in cases:
+            with self.subTest(position=name):
+                self.send("position fen " + fen + "\n")
+                self.expect_perft(depth, nodes)
+        self.send("quit\n")
+        self.expect_exit()
+
+    def test_perft_terminal_positions(self):
+        for fen, in_check in [("k7/1Q6/2K5/8/8/8/8/8 b - - 0 1", True),
+                              ("k7/8/1QK5/8/8/8/8/8 b - - 0 1", False)]:
+            self.send("position fen " + fen + "\n")
+            self.expect_check("black", in_check)
+            self.expect_perft(0, 1)
+            for depth in [1, 2, 6]:
+                self.expect_perft(depth, 0)
+        self.send("quit\n")
+        self.expect_exit()
+
+    def test_perft_preserves_en_passant_and_ignores_counters(self):
+        self.send("position fen 7k/8/8/3pP3/8/8/8/7K w - d6 17 42\n")
+        for _ in range(2):
+            self.expect_perft(2, 19)
+            self.expect_state({"h1": "K", "h8": "k", "e5": "P", "d5": "p"},
+                              en_passant="d6", halfmove=17, fullmove=42)
+        self.send("position fen " + START_FEN.replace("0 1", "2147483647 2147483647") + "\n")
+        self.expect_perft(2, 400)
+        expected = START_POSITION.copy()
+        expected[12] = "Halfmove clock: 2147483647"
+        expected[13] = "Fullmove number: 2147483647"
+        self.expect_position(expected)
+        self.send("quit\n")
+        self.expect_exit()
+
+    def test_perft_command_validation(self):
+        self.send("position fen " + SAMPLE_FEN + "\n")
+        for command in ["perft", "perft -1", "perft +1", "perft 1x", "perft 7",
+                        "perft 2147483648", "perft 0 extra"]:
+            self.send(command + "\n")
+            self.expect("info string Invalid perft command")
+            self.expect_position(SAMPLE_POSITION)
+        self.send(" \tperft\t0 \r\n")
+        self.expect("info string perft depth 0 nodes 1")
+        for board in [{}, {"a1": "K"}, {"h8": "k"},
+                      {"a1": "K", "b1": "K", "h8": "k"}]:
+            self.send("position fen " + fen_with_pieces(board) + "\nperft 0\n")
+            self.expect("info string Cannot run perft: expected exactly one king of each color")
         self.send("quit\n")
         self.expect_exit()
 

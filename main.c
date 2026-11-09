@@ -677,6 +677,71 @@ static void read_moves_command(const struct Position *position)
     putchar('\n');
 }
 
+/* Count sequences of exactly depth moves. Return zero on failure, without
+   publishing a partial count. Every child starts as a copy of its parent. */
+static int perft(const struct Position *position, int depth, unsigned long long *nodes)
+{
+    if (depth == 0) {
+        *nodes = 1;
+        return 1;
+    }
+
+    /* A large local array at every recursive level would exhaust the stack. */
+    struct Move *moves = malloc(MAX_MOVES * sizeof(struct Move));
+    if (moves == NULL)
+        return 0;
+    int count = generate_moves(position, moves);
+    if (count == -1) {
+        free(moves);
+        return 0;
+    }
+
+    unsigned long long total = 0;
+    for (int i = 0; i < count; i++) {
+        struct Position child = *position;
+        unsigned long long child_nodes;
+        if (!apply_move(&child, moves[i]) || !perft(&child, depth - 1, &child_nodes)) {
+            free(moves);
+            return 0;
+        }
+        if (ULLONG_MAX - total < child_nodes) {
+            free(moves);
+            return 0;
+        }
+        total += child_nodes;
+    }
+    free(moves);
+    *nodes = total;
+    return 1;
+}
+
+static void read_perft_command(const struct Position *position)
+{
+    char *text = strtok(NULL, " \t\r");
+    char *extra = strtok(NULL, " \t\r");
+    int depth;
+    if (text == NULL || extra != NULL || !read_number(text, &depth) || depth > 6) {
+        puts("info string Invalid perft command");
+        return;
+    }
+    if (find_king(position, WHITE) == -1 || find_king(position, BLACK) == -1) {
+        puts("info string Cannot run perft: expected exactly one king of each color");
+        return;
+    }
+
+    /* Perft ignores draw counters. Reset them on the copy so even a FEN with
+       maximum counters can be traversed without overflowing apply_move. */
+    struct Position root = *position;
+    root.halfmove_clock = 0;
+    root.fullmove_number = 1;
+    unsigned long long nodes;
+    if (!perft(&root, depth, &nodes)) {
+        puts("info string Cannot complete perft");
+        return;
+    }
+    printf("info string perft depth %d nodes %llu\n", depth, nodes);
+}
+
 static void read_check_command(const struct Position *position)
 {
     char *color_name = strtok(NULL, " \t\r");
@@ -837,6 +902,8 @@ int main(void)
             read_check_command(&position);
         } else if (strcmp(command, "moves") == 0) {
             read_moves_command(&position);
+        } else if (strcmp(command, "perft") == 0) {
+            read_perft_command(&position);
         } else if (strcmp(command, "quit") == 0) {
             break;
         }

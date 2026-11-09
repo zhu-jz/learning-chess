@@ -555,6 +555,72 @@ Successful commands remain silent; use `d`, `check`, or `moves` to inspect the
 result. This lesson updates current position state, but does not yet retain
 repetition history, determine game results, or search for a move.
 
+## Lesson 12: counting legal move sequences with perft
+
+`perft` counts legal move sequences of exactly a given length. It combines
+move generation and move application, making it a useful check before adding
+search. It does not evaluate positions or choose a move.
+
+Try:
+
+```text
+position startpos
+perft 3
+```
+
+The response is:
+
+```text
+info string perft depth 3 nodes 8902
+```
+
+Depth is measured in plies: one move by either player. At depth 0 there is
+exactly one sequence, the empty sequence, so the answer is 1. At depth 1 the
+answer is the number of legal moves. At greater depths the function applies
+each move to a copy and recursively counts the remaining moves. Adding the
+child counts gives the result. A position with no legal moves contributes zero
+at any positive depth, even if it was reached before the requested depth.
+
+This counts the final positions of move sequences, not distinct boards. Two
+different sequences reaching the same board are counted separately. Perft
+does not stop for repetition, move-count draws, or insufficient material.
+These counts are also different from the nodes visited by a searching engine.
+
+The recursive function calls `generate_moves` and `apply_move` directly. Each
+child has its own copied `Position`, so there is no undo operation and the
+original position stays unchanged. The command resets the two move counters
+on its root copy: they do not affect legal moves, and this avoids overflow
+when a supplied FEN already has maximum counters. Board state, side to move,
+castling rights, and the en passant target are preserved on that copy.
+
+The large `MAX_MOVES` array cannot safely be a local array at every recursive
+level. This lesson introduces `malloc` to obtain its storage from the heap.
+The returned pointer is checked against `NULL` before use, and every exit
+after allocation calls `free`. Only the lists on the active recursion path
+remain allocated. Parent and child lists are separate, so generating replies
+cannot overwrite the moves the parent is still visiting.
+
+The result uses `unsigned long long`, with a check before each addition.
+An allocation or counting failure reports `info string Cannot complete perft`
+without printing a partial result. The command accepts depths 0 through 6,
+requires exactly one king of each color, and rejects extra arguments. The
+depth limit bounds recursion; large traversals can still take time. Perft runs
+synchronously, so begin with small depths when inspecting a new position.
+
+The tests use the same four fixtures as the reference snapshot's
+[test_engine.py](minifish-reference-2026-11-05/test_engine.py):
+
+| Position | Depth | Nodes |
+| --- | ---: | ---: |
+| Starting position | 4 | 197,281 |
+| Castling (Kiwipete) | 3 | 97,862 |
+| En passant endgame | 4 | 43,238 |
+| Promotion position | 3 | 9,467 |
+
+All four counts match. This verifies those move trees; exact search parity
+still requires the reference evaluation, ordering, and search algorithms in
+later lessons.
+
 ## Build and try it
 
 From the project root in PowerShell, using MSYS2 UCRT64 GCC:
@@ -624,3 +690,7 @@ rooks, and preservation of the position.
 Move-application tests cover opening sequences, both colors of every special
 move, captures, castling-right loss, en passant expiry, clock updates, counter
 limits, and rollback when a move in a sequence fails.
+Perft tests cover the reference fixtures, depths 0 through 4 at the starting
+position, terminal positions, counter independence, input validation, and
+preservation of board state and en passant rights. Individual perft replies
+have a longer test timeout than ordinary command replies.
