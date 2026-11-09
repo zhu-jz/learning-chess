@@ -143,6 +143,10 @@ class UciTests(unittest.TestCase):
         self.send("isready\n")
         self.expect("readyok")
 
+    def expect_eval(self, score):
+        self.send("eval\n")
+        self.expect(f"info string eval material cp {score}")
+
     def read_moves(self):
         self.send("moves\n")
         try:
@@ -1046,6 +1050,70 @@ class UciTests(unittest.TestCase):
                       {"a1": "K", "b1": "K", "h8": "k"}]:
             self.send("position fen " + fen_with_pieces(board) + "\nperft 0\n")
             self.expect("info string Cannot run perft: expected exactly one king of each color")
+        self.send("quit\n")
+        self.expect_exit()
+
+    def test_material_balance_and_side_to_move(self):
+        self.expect_eval(0)
+        cases = [
+            ({}, 0),
+            ({"a2": "R", "b2": "P", "c6": "n"}, 300),
+            ({"a2": "B", "b2": "N", "a6": "r", "b6": "p"}, 0),
+            ({"a2": "Q", "a6": "r", "b6": "b", "c6": "p"}, 0),
+            ({"a2": "P", "b2": "N", "c2": "B", "d2": "R", "e2": "Q"}, 2100),
+            ({"a2": "p", "b2": "n", "c2": "b", "d2": "r", "e2": "q"}, -2100),
+        ]
+        for pieces, white_score in cases:
+            board = {"h1": "K", "h8": "k"}
+            board.update(pieces)
+            for side, score in [("w", white_score), ("b", -white_score)]:
+                with self.subTest(pieces=pieces, side=side):
+                    self.send("position fen " + fen_with_pieces(board, side) + "\n")
+                    self.expect_eval(score)
+        self.send("quit\n")
+        self.expect_exit()
+
+    def test_material_after_captures_and_promotions(self):
+        for fen, move in [("7k/8/8/8/8/2n5/8/KN6 w - - 0 1", "b1c3"),
+                          ("kn6/8/2N5/8/8/8/8/7K b - - 0 1", "b8c6")]:
+            self.send("position fen " + fen + "\n")
+            self.expect_eval(0)
+            self.send("position fen " + fen + " moves " + move + "\n")
+            self.expect_eval(-300)
+        for side, pawn, source, target in [("w", "P", "e7", "e8"), ("b", "p", "e2", "e1")]:
+            fen = fen_with_pieces({"h1": "K", "h8": "k", source: pawn}, side)
+            self.send("position fen " + fen + "\n")
+            self.expect_eval(100)
+            for suffix, value in [("n", 300), ("b", 300), ("r", 500), ("q", 900)]:
+                self.send("position fen " + fen + " moves " + source + target + suffix + "\n")
+                self.expect_eval(-value)
+        self.send("position fen " + SAMPLE_FEN + " moves e5d6\n")
+        self.expect_eval(-100)
+        self.send("position fen r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1 moves e1g1\n")
+        self.expect_eval(0)
+        self.send("quit\n")
+        self.expect_exit()
+
+    def test_material_ignores_square_placement_and_other_metadata(self):
+        for fen in ["6k1/8/1n6/8/8/2P5/R7/6K1 w - - 0 1",
+                    "6k1/8/4n3/8/3R4/8/1P6/6K1 w KQkq b6 123 9999"]:
+            self.send("position fen " + fen + "\n")
+            self.expect_eval(300)
+        # Material evaluation does not report mate, even on a checkmated board.
+        self.send("position fen k7/1Q6/2K5/8/8/8/8/8 b - - 0 1\n")
+        self.expect_eval(-900)
+        self.send("quit\n")
+        self.expect_exit()
+
+    def test_eval_command_validation_and_position_preservation(self):
+        self.send("position fen " + SAMPLE_FEN + "\n")
+        self.send(" \teval \t\r\n")
+        self.expect("info string eval material cp 0")
+        self.expect_eval(0)
+        for command in ["eval white", "eval extra words"]:
+            self.send(command + "\n")
+            self.expect("info string Invalid eval command")
+        self.expect_position(SAMPLE_POSITION)
         self.send("quit\n")
         self.expect_exit()
 

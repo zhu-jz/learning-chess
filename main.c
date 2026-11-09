@@ -236,6 +236,48 @@ static int piece_color(int piece)
     return BLACK;
 }
 
+/* Teaching values in centipawns: one pawn is worth 100. Kings do not have a
+   material price; search will handle checkmate separately from evaluation. */
+static int piece_value(int piece)
+{
+    if (piece == WHITE_PAWN || piece == BLACK_PAWN)
+        return 100;
+    if (piece == WHITE_KNIGHT || piece == BLACK_KNIGHT)
+        return 300;
+    if (piece == WHITE_BISHOP || piece == BLACK_BISHOP)
+        return 300;
+    if (piece == WHITE_ROOK || piece == BLACK_ROOK)
+        return 500;
+    if (piece == WHITE_QUEEN || piece == BLACK_QUEEN)
+        return 900;
+    return 0;
+}
+
+/* Positive means a material advantage for the side whose turn it is. */
+static int evaluate(const struct Position *position)
+{
+    int score = 0;
+    for (int square = 0; square < 64; square++) {
+        int piece = position->board[square];
+        if (piece_color(piece) == WHITE)
+            score += piece_value(piece);
+        else if (piece_color(piece) == BLACK)
+            score -= piece_value(piece);
+    }
+    if (position->side_to_move == BLACK)
+        score = -score;
+    return score;
+}
+
+static void read_eval_command(const struct Position *position)
+{
+    if (strtok(NULL, " \t\r") != NULL) {
+        puts("info string Invalid eval command");
+        return;
+    }
+    printf("info string eval material cp %d\n", evaluate(position));
+}
+
 /* Test the piece's attack pattern, without considering its own king's safety.
    Both squares must be valid board indices. The target may be occupied by
    either color: a piece also defends a square occupied by a friendly piece. */
@@ -904,6 +946,8 @@ int main(void)
             read_moves_command(&position);
         } else if (strcmp(command, "perft") == 0) {
             read_perft_command(&position);
+        } else if (strcmp(command, "eval") == 0) {
+            read_eval_command(&position);
         } else if (strcmp(command, "quit") == 0) {
             break;
         }

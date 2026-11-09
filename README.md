@@ -621,6 +621,61 @@ All four counts match. This verifies those move trees; exact search parity
 still requires the reference evaluation, ordering, and search algorithms in
 later lessons.
 
+## Lesson 13: material evaluation
+
+`evaluate` gives the position a simple material score. This is a teaching
+evaluator for the first search lessons, not the reference engine's NNUE
+evaluation. Its deliberately simple piece values are:
+
+| Piece | Value in centipawns |
+| --- | ---: |
+| Pawn | 100 |
+| Knight | 300 |
+| Bishop | 300 |
+| Rook | 500 |
+| Queen | 900 |
+| King | 0 |
+
+One centipawn is one hundredth of our pawn value. These numbers are fixed
+weights for this lesson, not a claim that a piece has the same practical worth
+in every position. The king has no material price: it cannot be traded, and
+search will handle checkmate separately. Empty squares also contribute zero.
+
+The function scans the board, adds White's material, and subtracts Black's.
+It then negates the result if Black is to move. A positive score therefore
+means a material advantage for the side to move; a negative score means a
+material disadvantage. This convention will let negamax search reverse the
+sign when considering the opponent's reply.
+
+The new `eval` inspection command takes no arguments. For example:
+
+```text
+position fen 7k/8/8/8/8/8/4P3/7K w - - 0 1
+eval
+position fen 7k/8/8/8/8/8/4P3/7K b - - 0 1
+eval
+```
+
+The replies are:
+
+```text
+info string eval material cp 100
+info string eval material cp -100
+```
+
+Both describe the same material advantage for White. The sign changes because
+the side to move changes. The initial position scores zero, as do positions
+with balanced material under these weights.
+
+The evaluator reads the board and side to move without modifying the position.
+It ignores piece placement, mobility, king safety, clocks, castling rights,
+and the en passant target. It also does not validate king counts or determine
+checkmate, stalemate, or draws. Even a checkmated position receives only its
+material score from `eval`; terminal game results belong to search.
+
+The `material` label makes the command's scope explicit. No NNUE network is
+loaded and these scores are not expected to match Minifish yet.
+
 ## Build and try it
 
 From the project root in PowerShell, using MSYS2 UCRT64 GCC:
@@ -694,3 +749,7 @@ Perft tests cover the reference fixtures, depths 0 through 4 at the starting
 position, terminal positions, counter independence, input validation, and
 preservation of board state and en passant rights. Individual perft replies
 have a longer test timeout than ordinary command replies.
+Material tests cover balance, both score perspectives, captures, all promotion
+choices, en passant, unchanged material after castling, and inspection without
+changing the position. They also check that piece placement and unrelated
+metadata do not affect this deliberately limited evaluator.
