@@ -174,6 +174,9 @@ static int read_fen(struct Position *position, char *fields[6])
     return position->fullmove_number >= 1;
 }
 
+/* Defined after the move generator, which supplies the legal choices. */
+static int play_uci_move(struct Position *position, const char *text);
+
 /* Continue tokenizing the line after the main loop has read "position". */
 static void read_position_command(struct Position *position)
 {
@@ -206,11 +209,17 @@ static void read_position_command(struct Position *position)
 
     char *extra = strtok(NULL, " \t\r");
     if (extra != NULL) {
-        if (strcmp(extra, "moves") == 0)
-            puts("info string Move lists are not supported yet");
-        else
+        if (strcmp(extra, "moves") != 0) {
             puts("info string Invalid position command");
-        return;
+            return;
+        }
+        char *text;
+        while ((text = strtok(NULL, " \t\r")) != NULL) {
+            if (!play_uci_move(&next, text)) {
+                printf("info string Cannot play move %s\n", text);
+                return;
+            }
+        }
     }
 
     /* Replace the old position only after the entire command succeeds. */
@@ -338,22 +347,84 @@ static int is_in_check(const struct Position *position, int color)
     return is_square_attacked(position, king_square, opponent);
 }
 
-/* This is a temporary board for testing king safety, not a complete move
-   application: turn, clocks, and castling rights are not needed by this test. */
+/* Change only piece placement. Move must come from the generator. */
+static void move_pieces(struct Position *position, struct Move move)
+{
+    position->board[move.to] = position->board[move.from];
+    position->board[move.from] = EMPTY;
+    if (move.en_passant_capture_square != -1)
+        position->board[move.en_passant_capture_square] = EMPTY;
+    if (move.promotion != EMPTY)
+        position->board[move.to] = move.promotion;
+    if (move.rook_from != -1) {
+        position->board[move.rook_to] = position->board[move.rook_from];
+        position->board[move.rook_from] = EMPTY;
+    }
+}
+
+/* Only piece placement matters here; turn and other metadata stay unchanged. */
 static int move_keeps_king_safe(const struct Position *position, struct Move move)
 {
     struct Position next = *position;
-    next.board[move.to] = next.board[move.from];
-    next.board[move.from] = EMPTY;
-    if (move.en_passant_capture_square != -1)
-        next.board[move.en_passant_capture_square] = EMPTY;
-    if (move.promotion != EMPTY)
-        next.board[move.to] = move.promotion;
-    if (move.rook_from != -1) {
-        next.board[move.rook_to] = next.board[move.rook_from];
-        next.board[move.rook_from] = EMPTY;
-    }
+    move_pieces(&next, move);
     return is_in_check(&next, position->side_to_move) == 0;
+}
+
+static void remove_rook_castling_right(struct Position *position, int piece, int square)
+{
+    if (piece == WHITE_ROOK) {
+        if (square == 0)
+            position->castling[WHITE_QUEENSIDE] = 0;
+        if (square == 7)
+            position->castling[WHITE_KINGSIDE] = 0;
+    } else if (piece == BLACK_ROOK) {
+        if (square == 56)
+            position->castling[BLACK_QUEENSIDE] = 0;
+        if (square == 63)
+            position->castling[BLACK_KINGSIDE] = 0;
+    }
+}
+
+/* Apply a generated legal move. Refuse an overflowing counter before changing
+   anything; the FEN reader permits counters all the way up to INT_MAX. */
+static int apply_move(struct Position *position, struct Move move)
+{
+    int piece = position->board[move.from];
+    int captured = position->board[move.to];
+    int pawn_move = piece == WHITE_PAWN || piece == BLACK_PAWN;
+    int capture = captured != EMPTY || move.en_passant_capture_square != -1;
+    if (!pawn_move && !capture && position->halfmove_clock == INT_MAX)
+        return 0;
+    if (position->side_to_move == BLACK && position->fullmove_number == INT_MAX)
+        return 0;
+
+    if (piece == WHITE_KING) {
+        position->castling[WHITE_KINGSIDE] = 0;
+        position->castling[WHITE_QUEENSIDE] = 0;
+    } else if (piece == BLACK_KING) {
+        position->castling[BLACK_KINGSIDE] = 0;
+        position->castling[BLACK_QUEENSIDE] = 0;
+    }
+    remove_rook_castling_right(position, piece, move.from);
+    remove_rook_castling_right(position, captured, move.to);
+
+    move_pieces(position, move);
+    position->en_passant_square = -1;
+    if (pawn_move && abs(move.to - move.from) == 16)
+        position->en_passant_square = (move.from + move.to) / 2;
+
+    if (pawn_move || capture)
+        position->halfmove_clock = 0;
+    else
+        position->halfmove_clock++;
+
+    if (position->side_to_move == WHITE) {
+        position->side_to_move = BLACK;
+    } else {
+        position->fullmove_number++;
+        position->side_to_move = WHITE;
+    }
+    return 1;
 }
 
 /* The caller has already excluded friendly targets and king captures.
@@ -552,6 +623,37 @@ static int generate_moves(const struct Position *position, struct Move moves[])
     return count;
 }
 
+/* Six bytes hold four coordinate characters, an optional suffix, and NUL. */
+static void move_to_string(struct Move move, char text[6])
+{
+    text[0] = 'a' + move.from % 8;
+    text[1] = '1' + move.from / 8;
+    text[2] = 'a' + move.to % 8;
+    text[3] = '1' + move.to / 8;
+    text[4] = '\0';
+    if (move.promotion != EMPTY) {
+        text[4] = (char)tolower(piece_symbols[move.promotion]);
+        text[5] = '\0';
+    }
+}
+
+/* Matching against generated moves also supplies promotion, rook, and en
+   passant details, so the text parser does not need to reconstruct them. */
+static int play_uci_move(struct Position *position, const char *text)
+{
+    if (strlen(text) != 4 && strlen(text) != 5)
+        return 0;
+    struct Move moves[MAX_MOVES];
+    int count = generate_moves(position, moves);
+    for (int i = 0; i < count; i++) {
+        char candidate[6];
+        move_to_string(moves[i], candidate);
+        if (strcmp(text, candidate) == 0)
+            return apply_move(position, moves[i]);
+    }
+    return 0;
+}
+
 static void read_moves_command(const struct Position *position)
 {
     if (strtok(NULL, " \t\r") != NULL) {
@@ -568,12 +670,9 @@ static void read_moves_command(const struct Position *position)
 
     printf("info string moves legal");
     for (int i = 0; i < count; i++) {
-        int from = moves[i].from;
-        int to = moves[i].to;
-        printf(" %c%d%c%d", 'a' + from % 8, from / 8 + 1,
-                           'a' + to % 8, to / 8 + 1);
-        if (moves[i].promotion != EMPTY)
-            putchar(tolower(piece_symbols[moves[i].promotion]));
+        char text[6];
+        move_to_string(moves[i], text);
+        printf(" %s", text);
     }
     putchar('\n');
 }

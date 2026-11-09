@@ -119,6 +119,14 @@ class UciTests(unittest.TestCase):
             self.expect(line)
         self.expect("readyok")
 
+    def expect_state(self, pieces, side="w", castling="-", en_passant="-", halfmove=0, fullmove=1):
+        rows = [rank + " " + " ".join(pieces.get(file + rank, ".") for file in "abcdefgh")
+                for rank in "87654321"]
+        rows += ["  a b c d e f g h", "Side to move: " + ("White" if side == "w" else "Black"),
+                 "Castling: " + castling, "En passant: " + en_passant,
+                 f"Halfmove clock: {halfmove}", f"Fullmove number: {fullmove}"]
+        self.expect_position(rows)
+
     def expect_attack(self, square, color, expected):
         self.send(f"attacked {square} {color}\n")
         answer = "yes" if expected else "no"
@@ -255,14 +263,141 @@ class UciTests(unittest.TestCase):
         self.send("quit\n")
         self.expect_exit()
 
-    def test_move_lists_are_rejected_without_changing_position(self):
+    def test_invalid_move_lists_leave_previous_position_unchanged(self):
         self.send("position fen " + SAMPLE_FEN + "\n")
         self.expect_position(SAMPLE_POSITION)
-        for command in ["position startpos moves e2e4",
-                        "position fen " + SAMPLE_FEN + " moves e5d6"]:
+        cases = [("position startpos moves e2e5", "e2e5"),
+                 ("position startpos moves e2e4 e7e5 g1g3", "g1g3"),
+                 ("position startpos moves e2e4 e2e3", "e2e3"),
+                 ("position startpos moves e2e4 garbage", "garbage"),
+                 ("position startpos moves E2E4", "E2E4"),
+                 ("position startpos moves e2e4q", "e2e4q"),
+                 ("position startpos moves 0000", "0000"),
+                 ("position fen 8/8/8/8/8/8/4P3/8 w - - 0 1 moves e2e3", "e2e3")]
+        for token in ["e7e8", "e7e8k", "e7e8p", "e7e8Q"]:
+            cases.append(("position fen 7k/4P3/8/8/8/8/8/7K w - - 0 1 moves " + token, token))
+        for command, invalid in cases:
             self.send(command + "\n")
-            self.expect("info string Move lists are not supported yet")
+            self.expect("info string Cannot play move " + invalid)
             self.expect_position(SAMPLE_POSITION)
+        self.send("quit\n")
+        self.expect_exit()
+
+    def test_apply_opening_sequence_and_reset(self):
+        self.send("position startpos moves e2e4 e7e5 g1f3 b8c6 f1b5\n")
+        self.expect_position([
+            "8 r . b q k b n r", "7 p p p p . p p p", "6 . . n . . . . .",
+            "5 . B . . p . . .", "4 . . . . P . . .", "3 . . . . . N . .",
+            "2 P P P P . P P P", "1 R N B Q K . . R", "  a b c d e f g h",
+            "Side to move: Black", "Castling: KQkq", "En passant: -",
+            "Halfmove clock: 3", "Fullmove number: 3",
+        ])
+        self.send("position startpos moves d2d4\n")
+        expected = START_POSITION.copy()
+        expected[4] = "4 . . . P . . . ."
+        expected[6] = "2 P P P . P P P P"
+        expected[9] = "Side to move: Black"
+        expected[11] = "En passant: d3"
+        self.expect_position(expected)
+        self.send("position startpos moves\n")
+        self.expect_position(START_POSITION)
+        self.send("quit\n")
+        self.expect_exit()
+
+    def test_apply_captures_and_en_passant_lifetime(self):
+        self.send("position fen 7k/3p4/8/4P3/8/8/8/7K b - - 9 12 moves d7d5\n")
+        self.expect_state({"h1": "K", "h8": "k", "e5": "P", "d5": "p"},
+                          en_passant="d6", fullmove=13)
+        self.assertIn("e5d6", self.read_moves())
+        self.send("position fen 7k/3p4/8/4P3/8/8/8/7K b - - 9 12 moves d7d5 e5d6\n")
+        self.expect_state({"h1": "K", "h8": "k", "d6": "P"}, side="b", fullmove=13)
+        self.send("position fen 7k/8/8/8/4p3/8/3P4/K7 w - - 9 12 moves d2d4 e4d3\n")
+        self.expect_state({"a1": "K", "h8": "k", "d3": "p"}, fullmove=13)
+        self.send("position fen 7k/8/8/3pP3/8/8/8/7K w - d6 0 1 moves h1g1 h8g8\n")
+        self.expect_state({"g1": "K", "g8": "k", "e5": "P", "d5": "p"}, halfmove=2, fullmove=2)
+        self.assertNotIn("e5d6", self.read_moves())
+        # A non-pawn capture resets the clock and removes the captured piece.
+        self.send("position fen 7k/8/8/8/8/2n5/8/KN6 w - - 9 12 moves b1c3\n")
+        self.expect_state({"a1": "K", "h8": "k", "c3": "N"}, side="b", fullmove=12)
+        self.send("quit\n")
+        self.expect_exit()
+
+    def test_apply_all_castles(self):
+        base = {"a1": "R", "e1": "K", "h1": "R", "a8": "r", "e8": "k", "h8": "r"}
+        for side, token, rook_from, rook_to, rights, next_side, number in [
+            ("w", "e1g1", "h1", "f1", "kq", "b", 42),
+            ("w", "e1c1", "a1", "d1", "kq", "b", 42),
+            ("b", "e8g8", "h8", "f8", "KQ", "w", 43),
+            ("b", "e8c8", "a8", "d8", "KQ", "w", 43),
+        ]:
+            self.send(f"position fen r3k2r/8/8/8/8/8/8/R3K2R {side} KQkq - 17 42 moves {token}\n")
+            expected = base.copy()
+            expected[token[2:]] = expected.pop(token[:2])
+            expected[rook_to] = expected.pop(rook_from)
+            self.expect_state(expected, next_side, rights, halfmove=18, fullmove=number)
+        self.send("quit\n")
+        self.expect_exit()
+
+    def test_castling_rights_do_not_return_and_captures_remove_them(self):
+        fen = "r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1"
+        base = {"a1": "R", "e1": "K", "h1": "R", "a8": "r", "e8": "k", "h8": "r"}
+        self.send("position fen " + fen + " moves h1h2 h8h7 h2h1 h7h8\n")
+        self.expect_state(base, castling="Qq", halfmove=4, fullmove=3)
+        self.send("position fen " + fen + " moves e1e2 e8e7 e2e1 e7e8\n")
+        self.expect_state(base, halfmove=4, fullmove=3)
+        self.send("position fen " + fen + " moves a1a8\n")
+        expected = base.copy()
+        expected["a8"] = expected.pop("a1")
+        self.expect_state(expected, side="b", castling="Kk")
+        self.send("position fen " + fen.replace(" w ", " b ") + " moves h8h1\n")
+        expected = base.copy()
+        expected["h1"] = expected.pop("h8")
+        self.expect_state(expected, castling="Qq", fullmove=2)
+        # Promotion capture of a home rook also removes its castling right.
+        self.send("position fen r3k2r/8/8/8/8/8/6p1/R3K2R b KQkq - 9 12 moves g2h1q\n")
+        expected = base.copy()
+        expected["h1"] = "q"
+        self.expect_state(expected, castling="Qkq", fullmove=13)
+        self.send("quit\n")
+        self.expect_exit()
+
+    def test_apply_all_promotion_pieces_for_both_colors(self):
+        for side in ["w", "b"]:
+            for destination in ["e8", "d8"]:
+                for suffix in "nbrq":
+                    board = {"h1": "K", "h8": "k", "e7": "P", "d8": "r"}
+                    source = "e7"
+                    target = destination
+                    promoted = suffix.upper()
+                    if side == "b":
+                        board = {sq[0] + str(9 - int(sq[1])): pc.swapcase() for sq, pc in board.items()}
+                        source = "e2"
+                        target = destination[0] + "1"
+                        promoted = suffix
+                    self.send("position fen " + fen_with_pieces(board, side)
+                              + " moves " + source + target + suffix + "\n")
+                    del board[source]
+                    board[target] = promoted
+                    self.expect_state(board, side="b" if side == "w" else "w",
+                                      fullmove=1 if side == "w" else 2)
+        self.send("quit\n")
+        self.expect_exit()
+
+    def test_move_counter_limits_are_checked_before_changes(self):
+        self.send("position fen " + SAMPLE_FEN + "\n")
+        for fen, token in [(START_FEN.replace("0 1", "2147483647 1"), "g1f3"),
+                           (START_FEN.replace(" w ", " b ").replace("0 1", "0 2147483647"), "e7e5")]:
+            self.send("position fen " + fen + " moves " + token + "\n")
+            self.expect("info string Cannot play move " + token)
+            self.expect_position(SAMPLE_POSITION)
+        self.send("position fen " + START_FEN.replace("0 1", "2147483647 2147483647") + " moves e2e4\n")
+        expected = START_POSITION.copy()
+        expected[4] = "4 . . . . P . . ."
+        expected[6] = "2 P P P P . P P P"
+        expected[9] = "Side to move: Black"
+        expected[11] = "En passant: e3"
+        expected[13] = "Fullmove number: 2147483647"
+        self.expect_position(expected)
         self.send("quit\n")
         self.expect_exit()
 

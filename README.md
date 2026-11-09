@@ -148,9 +148,8 @@ and whether pieces support the claimed rights will be addressed with the rules.
 All parsing happens in a temporary `struct Position`. Only a successful command
 reaches `*position = next`, which copies the entire structure, including its
 arrays. A malformed command prints `info string Invalid position command`
-and preserves the previous position. Trailing text is rejected too. Move lists
-such as `position startpos moves e2e4` report that moves are not supported yet
-and also preserve the previous position.
+and preserves the previous position. Lesson 3 rejected trailing text and move
+lists too; lesson 11 adds support for `position ... moves ...`.
 
 ## Lesson 4: detecting attacked squares
 
@@ -355,8 +354,8 @@ rank were omitted entirely until `Move` could record a promotion piece.
 Lesson 8 adds those moves. Pawns already on an end rank in a study position
 still produce no moves.
 
-Move generation continues to leave the position unchanged. Applying moves,
-including updating clocks and other position fields, remains a separate lesson.
+Move generation continues to leave the position unchanged. Lesson 11 adds
+move application, including updating clocks and other position fields.
 
 ## Lesson 8: promotions
 
@@ -394,8 +393,8 @@ info string moves partial h1g1 h1g2 h1h2 e7e8n e7e8b e7e8r e7e8q
 ```
 
 Lesson 8 introduced the `partial` label because en passant and castling were
-still missing. Lessons 9 and 10 add those moves. Complete move application
-remains a later lesson.
+still missing. Lessons 9 and 10 add those moves; lesson 11 adds complete move
+application.
 
 `MAX_MOVES` is now `64 * 64 * 4`: at most four choices per pair of squares.
 This simple bound continues to accommodate unusual study positions. It uses
@@ -450,9 +449,9 @@ an absent or incorrect captured pawn. An occupied destination may still be an
 ordinary capture, but it never removes a second piece as en passant.
 
 En passant is available only immediately after the opposing double advance.
-Maintaining that lifetime by setting and clearing the target belongs to the
-later move-application lesson. For now, loading a FEN without the target removes
-the opportunity. Lesson 9 kept the `partial` label until castling was added.
+Lesson 11 maintains that lifetime by setting and clearing the target after
+moves. Loading a FEN without the target also removes the opportunity.
+Lesson 9 kept the `partial` label until castling was added.
 
 ## Lesson 10: standard castling
 
@@ -496,8 +495,65 @@ a game, and move generation is not a complete position validator.
 Generation remains read-only: castling rights, clocks, and the actual board
 do not change when `moves` is called. As with en passant history, the engine
 trusts the supplied FEN rights. Updating those rights when a king or rook moves,
-or a rook is captured, belongs to the next lesson on applying moves. This
-lesson adds neither game-result reporting nor search.
+or a rook is captured, is covered by lesson 11. This lesson adds neither
+game-result reporting nor search.
+
+## Lesson 11: applying moves and reading move lists
+
+The engine now accepts move sequences after either starting-position form:
+
+```text
+position startpos moves e2e4 e7e5 g1f3 b8c6 f1b5
+d
+position fen 7k/3p4/8/4P3/8/8/8/7K b - - 9 12 moves d7d5 e5d6
+d
+```
+
+The first sequence reaches the position after 3. Bb5, with Black to move,
+a halfmove clock of 3, and fullmove number 3. The second sequence includes
+White capturing en passant; the white pawn finishes on d6 and the black pawn
+disappears from d5. Black is then to move at fullmove number 13.
+
+`play_uci_move` generates the legal moves and compares their coordinate strings
+with the next input word. The selected `Move` already contains any promotion,
+en passant, and castling details. This keeps the command parser from having to
+duplicate the chess rules. `move_to_string` is shared by this matching step and
+the `moves` inspection command. Promotion suffixes must be lowercase and are
+required when promoting; castling uses the king's start and destination.
+
+`move_pieces` contains the board changes shared by king-safety testing and full
+move application. `apply_move` saves the moving and captured pieces before
+changing the board, then updates the rest of the position:
+
+- A king move removes both of that color's castling rights.
+- A rook leaving its home square, or being captured there, removes the
+  corresponding right. Returning a piece never restores a right.
+- Every move clears the old en passant target. A double pawn advance sets
+  the crossed square as the new target, even without a potential capturer.
+- Pawn moves and captures reset the halfmove clock; other moves increment it.
+- Black's move increments the fullmove number. Every move changes the turn.
+
+The king-safety test continues to use only `move_pieces` on a copy: it asks about
+the moving side's king before changing turns. Full application uses the same
+board operations and adds the metadata updates, so special moves have only one
+piece-placement implementation.
+
+The whole `position` command is atomic. The parser loads its starting position
+and plays all supplied moves on a temporary structure. Only when every move
+succeeds does it replace the current position. For example, an illegal third
+move leaves the engine's previous position unchanged, rather than installing
+the position after the first two moves. Errors report
+`info string Cannot play move <token>`. An empty `moves` list is accepted.
+
+The existing FEN reader accepts counters up to `INT_MAX`. `apply_move` checks
+before incrementing either counter and refuses a move that would overflow,
+without changing anything. A pawn move or capture can still reset a maximum
+halfmove clock. Counter overflow produces the same command error as an invalid
+or illegal move. Ordinary game counters do not approach this boundary.
+
+Successful commands remain silent; use `d`, `check`, or `moves` to inspect the
+result. This lesson updates current position state, but does not yet retain
+repetition history, determine game results, or search for a move.
 
 ## Build and try it
 
@@ -543,7 +599,7 @@ lines, `quit`, and end of input. The board test checks every displayed rank,
 piece, and coordinate label, then repeats the display to check that inspection
 leaves the position unchanged. FEN tests cover every position field, resetting
 the position, en passant without a capturer, counter limits, and rejection of
-malformed input or unsupported move lists without changing the current state.
+malformed input without changing the current state.
 Attack tests check every target square for isolated pieces of both colors,
 central and edge positions, blockers in all eight sliding directions, knight
 jumps, pinned pieces, and command validation. Some fixtures intentionally omit
@@ -565,3 +621,6 @@ and preservation of the original position.
 Castling tests cover both sides and colors, individual rights, home-piece
 placement, every intervening square, attacks along the king's path, attacked
 rooks, and preservation of the position.
+Move-application tests cover opening sequences, both colors of every special
+move, captures, castling-right loss, en passant expiry, clock updates, counter
+limits, and rollback when a move in a sequence fails.
