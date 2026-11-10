@@ -24,8 +24,8 @@ The first lesson introduced the initial conversation:
 | `quit` | Exit successfully |
 
 Empty lines and unknown commands are ignored. End of input also exits cleanly.
-There is no move selection or search yet; `isready` simply confirms that the
-command loop is ready.
+In lesson 1 there was no move selection or search; `isready` simply confirmed
+that the command loop was ready. Lesson 14 adds a bounded search command.
 
 `main.c` contains the whole program. `read_command` reads a complete line before
 the loop examines its first word. Spaces, tabs, and Windows carriage returns
@@ -278,7 +278,7 @@ info string moves non-pawn b1a3 b1c3 g1f3 g1h3
 Each move is printed as its starting square followed by its destination.
 Only the four knight moves appeared because pawn moves were outside that lesson.
 The `non-pawn` label made that limitation visible. This is an extra study
-command; it does not apply moves or implement the UCI `go` command.
+command; it does not apply moves. Lesson 14 adds the separate UCI `go` command.
 
 The lesson 6 generator considers each starting square, then each destination square.
 It skips pieces of the wrong color and pawns, rejects friendly destinations
@@ -552,8 +552,8 @@ halfmove clock. Counter overflow produces the same command error as an invalid
 or illegal move. Ordinary game counters do not approach this boundary.
 
 Successful commands remain silent; use `d`, `check`, or `moves` to inspect the
-result. This lesson updates current position state, but does not yet retain
-repetition history, determine game results, or search for a move.
+result. Lesson 11 updates current position state. Later lessons build search
+and draw handling on top of it.
 
 ## Lesson 12: counting legal move sequences with perft
 
@@ -639,7 +639,7 @@ evaluation. Its deliberately simple piece values are:
 One centipawn is one hundredth of our pawn value. These numbers are fixed
 weights for this lesson, not a claim that a piece has the same practical worth
 in every position. The king has no material price: it cannot be traded, and
-search will handle checkmate separately. Empty squares also contribute zero.
+search handles checkmate separately in lesson 14. Empty squares also contribute zero.
 
 The function scans the board, adds White's material, and subtracts Black's.
 It then negates the result if Black is to move. A positive score therefore
@@ -675,6 +675,71 @@ material score from `eval`; terminal game results belong to search.
 
 The `material` label makes the command's scope explicit. No NNUE network is
 loaded and these scores are not expected to match Minifish yet.
+
+## Lesson 14: fixed-depth negamax search
+
+The engine can now choose a move using `go depth N`, for depths 1 through 4.
+For example:
+
+```text
+position startpos
+go depth 2
+```
+
+The response is:
+
+```text
+info depth 2 score cp 0 nodes 421
+bestmove b1a3
+```
+
+`negamax` examines every legal move, applies it to a copied position, and calls
+itself with one less ply remaining. The child reports a score from the
+opponent's perspective, so the parent negates it. The move with the greatest
+negated score is the parent's best move. This single rule handles both colors.
+
+At depth zero the function uses the material evaluator, but first checks
+whether there are any legal moves. No moves while in check means checkmate;
+no moves without check means stalemate. Checking these cases before evaluating
+material is essential for recognizing a mate on the final searched move.
+
+Checkmate scores use `-MATE_SCORE + ply`, where `ply` is the distance from the
+search root. `MATE_SCORE` is 100,000, larger than any possible material score
+under the teaching weights. After signs alternate back to the root, a shorter
+winning mate scores higher than a longer one. When all choices lose to mate,
+the engine prefers delaying it. Stalemate scores zero.
+
+The command reports material results as `score cp`, from the root side's
+perspective. Forced mates are reported as `score mate` in whole moves: positive
+for a winning mate, negative for a losing mate. A root that is already
+checkmated reports `mate 0`. Both a checkmated root and a stalemated root return
+`bestmove 0000`, because no legal move exists.
+
+`SearchResult` holds the score, chosen move, and a flag saying whether a move
+was selected. Terminal positions and depth-zero leaves have no selected move.
+The function returns success separately so allocation or counter failures are
+not mistaken for chess scores. Lists are allocated and freed as in perft.
+
+Each invocation counts as one search node, including the root and depth-zero
+leaves. Starting-position depth two therefore visits `1 + 20 + 400 = 421`
+nodes. These are search-node counts, not perft's final-leaf counts. Strictly
+greater scores replace the best move; ties keep the first generated move.
+Thus `b1a3` wins the starting-position tie by enumeration order, not because
+the material evaluator understands opening development.
+
+This first search is deliberately limited. It has no alpha-beta pruning,
+quiescence search, move ordering, iterative deepening, or NNUE. It handles
+checkmate and stalemate, but does not yet adjudicate repetition, move-count
+draws, or insufficient material. Counters are normalized on the root copy,
+as in perft, while the current position stays unchanged. Its scores and node
+counts are not yet expected to match Minifish's search.
+
+The command runs synchronously and accepts only `go depth 1` through
+`go depth 4`. Other limits and extra arguments are rejected. During a search,
+input commands wait until it finishes; `stop`, clock-based play, and responsive
+input handling belong to later lessons. The depth cap keeps this unpruned
+teaching search bounded. Reported depth is the requested limit, even when a
+terminal root finishes immediately.
 
 ## Build and try it
 
@@ -753,3 +818,6 @@ Material tests cover balance, both score perspectives, captures, all promotion
 choices, en passant, unchanged material after castling, and inspection without
 changing the position. They also check that piece placement and unrelated
 metadata do not affect this deliberately limited evaluator.
+Search tests cover deterministic ties and node counts, both colors, captures,
+a recapture visible only at depth two, promotions, en passant, mate at the
+horizon, mate distance, terminal roots, validation, and position preservation.

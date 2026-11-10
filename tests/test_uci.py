@@ -147,6 +147,20 @@ class UciTests(unittest.TestCase):
         self.send("eval\n")
         self.expect(f"info string eval material cp {score}")
 
+    def expect_search(self, depth, kind, score, bestmove, nodes=None):
+        self.send(f"go depth {depth}\n")
+        try:
+            line = self.output.get(timeout=60)
+        except Empty:
+            self.fail("Timed out waiting for search")
+        self.assertIsNotNone(line)
+        self.assertRegex(line, rf"^info depth {depth} score {kind} {score} nodes [0-9]+$")
+        if nodes is not None:
+            self.assertEqual(int(line.split()[-1]), nodes)
+        self.expect("bestmove " + bestmove)
+        self.send("isready\n")
+        self.expect("readyok")
+
     def read_moves(self):
         self.send("moves\n")
         try:
@@ -1114,6 +1128,83 @@ class UciTests(unittest.TestCase):
             self.send(command + "\n")
             self.expect("info string Invalid eval command")
         self.expect_position(SAMPLE_POSITION)
+        self.send("quit\n")
+        self.expect_exit()
+
+    def test_negamax_start_position_nodes_ties_and_preservation(self):
+        for depth, nodes in [(1, 21), (2, 421), (3, 9323), (1, 21)]:
+            self.expect_search(depth, "cp", 0, "b1a3", nodes)
+            self.expect_position(START_POSITION)
+        self.send("quit\n")
+        self.expect_exit()
+
+    def test_negamax_captures_for_both_colors(self):
+        for fen, bestmove in [("7k/8/8/8/8/2n5/8/KN6 w - - 0 1", "b1c3"),
+                              ("kn6/8/2N5/8/8/8/8/7K b - - 0 1", "b8c6")]:
+            self.send("position fen " + fen + "\n")
+            for depth in [1, 2]:
+                self.expect_search(depth, "cp", 300, bestmove)
+        self.send("quit\n")
+        self.expect_exit()
+
+    def test_negamax_sees_recapture_at_depth_two(self):
+        self.send("position fen 7k/8/4p3/3r4/8/8/8/K2Q4 w - - 0 1\n")
+        # At one ply the rook looks free. At two plies its pawn recaptures.
+        self.expect_search(1, "cp", 800, "d1d5")
+        self.expect_search(2, "cp", 300, "d1b1")
+        self.send("quit\n")
+        self.expect_exit()
+
+    def test_negamax_promotions_and_en_passant(self):
+        for fen, bestmove in [("7k/4P3/8/8/8/8/8/7K w - - 0 1", "e7e8q"),
+                              ("7k/8/8/8/8/8/4p3/7K b - - 0 1", "e2e1q")]:
+            self.send("position fen " + fen + "\n")
+            self.expect_search(1, "cp", 900, bestmove)
+        self.send("position fen 7k/8/8/3pP3/8/8/8/7K w - d6 17 42\n")
+        self.expect_search(1, "cp", 100, "e5d6")
+        self.expect_state({"h1": "K", "h8": "k", "e5": "P", "d5": "p"},
+                          en_passant="d6", halfmove=17, fullmove=42)
+        self.send("quit\n")
+        self.expect_exit()
+
+    def test_negamax_mate_at_horizon_and_mate_distance(self):
+        for fen, bestmove in [("7k/8/5KQ1/8/8/8/8/8 w - - 0 1", "g6g7"),
+                              ("8/8/8/8/8/5kq1/8/7K b - - 0 1", "g3g2")]:
+            self.send("position fen " + fen + "\n")
+            self.expect_search(1, "mate", 1, bestmove)
+            self.expect_search(3, "mate", 1, bestmove)
+        # Black has only Kh7, after which Qg7 is mate: a negative mate score.
+        self.send("position fen 7k/8/5K2/6Q1/8/8/8/8 b - - 0 1\n")
+        self.expect_search(2, "mate", -1, "h8h7")
+        self.send("quit\n")
+        self.expect_exit()
+
+    def test_negamax_terminal_roots(self):
+        for fen, kind in [("k7/1Q6/2K5/8/8/8/8/8 b - - 0 1", "mate"),
+                          ("k7/8/1QK5/8/8/8/8/8 b - - 0 1", "cp")]:
+            self.send("position fen " + fen + "\n")
+            self.expect_search(4, kind, 0, "0000", nodes=1)
+        self.send("quit\n")
+        self.expect_exit()
+
+    def test_go_validation_and_counter_independence(self):
+        self.send("position fen " + SAMPLE_FEN + "\n")
+        for command in ["go", "go infinite", "go movetime 100", "go depth", "go depth 0",
+                        "go depth 5", "go depth -1", "go depth 1x", "go depth 1 extra",
+                        "go depth 2147483648"]:
+            self.send(command + "\n")
+            self.expect("info string Invalid go command: expected go depth 1..4")
+            self.expect_position(SAMPLE_POSITION)
+        for pieces in [{}, {"a1": "K"}, {"a8": "k"},
+                       {"a1": "K", "h1": "K", "a8": "k"}]:
+            self.send("position fen " + fen_with_pieces(pieces) + "\ngo depth 1\n")
+            self.expect("info string Cannot search: expected exactly one king of each color")
+        self.send("position fen " + START_FEN.replace("0 1", "2147483647 2147483647") + "\n")
+        self.expect_search(1, "cp", 0, "b1a3", nodes=21)
+        expected = START_POSITION.copy()
+        expected[12] = "Halfmove clock: 2147483647"
+        expected[13] = "Fullmove number: 2147483647"
+        self.expect_position(expected)
         self.send("quit\n")
         self.expect_exit()
 

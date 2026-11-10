@@ -41,6 +41,15 @@ struct Move {
    generous bound also accommodates study positions with unusual piece counts. */
 enum { MAX_MOVES = 64 * 64 * 4 };
 
+/* Even 64 queens score only 57600 with our teaching material values. */
+enum { MATE_SCORE = 100000, INFINITE_SCORE = 100001, MAX_SEARCH_DEPTH = 4 };
+
+struct SearchResult {
+    int score;
+    int has_move;
+    struct Move move;
+};
+
 static void set_start_position(struct Position *position)
 {
     const int white_back_rank[8] = {
@@ -784,6 +793,108 @@ static void read_perft_command(const struct Position *position)
     printf("info string perft depth %d nodes %llu\n", depth, nodes);
 }
 
+/* Search every legal move. Scores always belong to the side to move, so a
+   child's score is negated when it is viewed from the parent's side. */
+static int negamax(const struct Position *position, int depth, int ply,
+                   unsigned long long *nodes, struct SearchResult *result)
+{
+    if (*nodes == ULLONG_MAX)
+        return 0;
+    (*nodes)++;
+    result->has_move = 0;
+
+    struct Move *moves = malloc(MAX_MOVES * sizeof(struct Move));
+    if (moves == NULL)
+        return 0;
+    int count = generate_moves(position, moves);
+    if (count == -1) {
+        free(moves);
+        return 0;
+    }
+
+    /* Check for terminal positions even at depth zero. Otherwise a mate on
+       the last searched move would be mistaken for a material score. */
+    if (count == 0) {
+        result->score = 0;
+        if (is_in_check(position, position->side_to_move) == 1)
+            result->score = -MATE_SCORE + ply;
+        free(moves);
+        return 1;
+    }
+    if (depth == 0) {
+        result->score = evaluate(position);
+        free(moves);
+        return 1;
+    }
+
+    result->score = -INFINITE_SCORE;
+    for (int i = 0; i < count; i++) {
+        struct Position child = *position;
+        struct SearchResult reply;
+        if (!apply_move(&child, moves[i]) || !negamax(&child, depth - 1, ply + 1, nodes, &reply)) {
+            free(moves);
+            return 0;
+        }
+        int score = -reply.score;
+        /* Strict comparison keeps the first generated move when scores tie. */
+        if (score > result->score) {
+            result->score = score;
+            result->move = moves[i];
+            result->has_move = 1;
+        }
+    }
+    free(moves);
+    return 1;
+}
+
+static void read_go_command(const struct Position *position)
+{
+    char *limit = strtok(NULL, " \t\r");
+    char *text = strtok(NULL, " \t\r");
+    char *extra = strtok(NULL, " \t\r");
+    int depth;
+    if (limit == NULL || strcmp(limit, "depth") != 0 || text == NULL || extra != NULL
+        || !read_number(text, &depth) || depth < 1 || depth > MAX_SEARCH_DEPTH) {
+        puts("info string Invalid go command: expected go depth 1..4");
+        return;
+    }
+    if (find_king(position, WHITE) == -1 || find_king(position, BLACK) == -1) {
+        puts("info string Cannot search: expected exactly one king of each color");
+        return;
+    }
+
+    /* Draw rules are a later lesson. Clocks do not affect this search, so
+       normalize them on the copy to keep apply_move's counters in range. */
+    struct Position root = *position;
+    root.halfmove_clock = 0;
+    root.fullmove_number = 1;
+    unsigned long long nodes = 0;
+    struct SearchResult result;
+    if (!negamax(&root, depth, 0, &nodes, &result)) {
+        puts("info string Cannot complete search");
+        return;
+    }
+
+    printf("info depth %d score ", depth);
+    if (abs(result.score) >= MATE_SCORE - MAX_SEARCH_DEPTH) {
+        int plies = MATE_SCORE - abs(result.score);
+        int moves_to_mate = (plies + 1) / 2;
+        if (result.score < 0)
+            moves_to_mate = -moves_to_mate;
+        printf("mate %d", moves_to_mate);
+    } else {
+        printf("cp %d", result.score);
+    }
+    printf(" nodes %llu\n", nodes);
+    if (result.has_move) {
+        char text[6];
+        move_to_string(result.move, text);
+        printf("bestmove %s\n", text);
+    } else {
+        puts("bestmove 0000");
+    }
+}
+
 static void read_check_command(const struct Position *position)
 {
     char *color_name = strtok(NULL, " \t\r");
@@ -948,6 +1059,8 @@ int main(void)
             read_perft_command(&position);
         } else if (strcmp(command, "eval") == 0) {
             read_eval_command(&position);
+        } else if (strcmp(command, "go") == 0) {
+            read_go_command(&position);
         } else if (strcmp(command, "quit") == 0) {
             break;
         }
