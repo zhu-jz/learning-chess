@@ -850,8 +850,9 @@ temporary move and ordinary loops, with no extra array or comparison callback.
 For `n` moves it can take roughly `n * n` comparisons; this is a readability
 choice, and sorting work is not included in search-node counts.
 
-Search orders its local list after the terminal and depth-zero checks.
-Leaves do not need sorting because they search no children. Move generation,
+In lesson 16, search orders its local list after the terminal and depth-zero
+checks. Lesson 17 lets depth-zero positions continue with quiescence search.
+Leaves that search no children need no sorting. Move generation,
 the `moves` command, and perft retain their original enumeration order.
 
 The strict `>` update in negamax now keeps the first **searched** move when
@@ -862,7 +863,7 @@ delaying promotion still reached the same material score. Now `e7e8q` is
 searched first and keeps that tie. Equal priorities still use the old
 generation order, so repeated searches remain deterministic.
 
-Measured node counts with the same evaluation and depth limits are:
+Measured node counts in lesson 16, with the same evaluation and depth limits, are:
 
 | Position and depth | Lesson 15 | With ordering |
 | --- | ---: | ---: |
@@ -880,6 +881,86 @@ with the previous engine by playing the new move and searching its replies.
 Depth limits, synchronous UCI input, material evaluation, and the earlier draw
 limitations are unchanged. This simple priority is not Minifish's complete
 move-ordering policy; exact reference parity remains a later target.
+
+## Lesson 17: continuing tactical exchanges with quiescence
+
+A fixed-depth material leaf can stop halfway through a capture exchange.
+In our defended-rook example, White can capture a rook with the queen, but
+Black's pawn immediately recaptures the queen:
+
+```text
+position fen 7k/8/4p3/3r4/8/8/8/K2Q4 w - - 0 1
+go depth 1
+```
+
+Lesson 16 chose `d1d5` and reported 800 centipawns because it stopped after
+the apparent rook gain. The current response is:
+
+```text
+info depth 1 score cp 300 nodes 37
+bestmove d1b1
+```
+
+Quiescence sees `e6d5` beyond the normal horizon and rejects the queen trade.
+The ordinary `eval` command still reports material only; the extra tactical
+work belongs to search.
+
+We keep one recursive function. While `depth` is positive, `negamax` searches
+all legal moves and reduces the remaining depth. At zero, it enters
+quiescence mode and leaves the remaining depth at zero in recursive calls.
+`ply` continues to increase, recording the real distance from the root.
+This shares position copying, alpha-beta bounds, move ordering, and cleanup
+without introducing a second copy of the search loop.
+
+Every node first generates the complete legal list and checks for checkmate
+or stalemate. An empty capture list would not be enough: there might still
+be legal quiet moves. Terminal detection also runs before any material cutoff.
+
+When the side to move is not in check, quiescence starts with the material
+score as its baseline. This is called *stand pat*. If that score reaches
+beta, the node can return immediately; otherwise it raises alpha if needed.
+The search then considers legal captures and all four promotion choices.
+En passant counts as a capture even though its destination is empty, and a
+promotion counts even without a capture. Quiet non-promoting moves, including
+quiet checks, are skipped in this mode.
+
+Stand pat is a search assumption: we assume the player can avoid making the
+position worse while declining an unfavorable exchange. It does not actually
+pass a turn. This assumption can fail in zugzwang, where every legal move
+worsens the position. Quiescence is an approximation, not full minimax over
+all moves beyond the depth limit.
+
+When in check, the player must respond, so there is no stand-pat baseline or
+stand-pat cutoff. Search starts with `-INFINITE_SCORE` and considers **every**
+legal evasion, including king moves and quiet blocks. Captures or promotions
+that give check can therefore lead to a longer sequence of replies.
+
+`MAX_SEARCH_PLY` limits the total distance from the root to 64 plies. Until
+we handle repetition, checking sequences need this hard recursion bound.
+At the limit, checkmate and stalemate still get their proper scores. Other
+positions return material, including positions in check. That emergency
+fallback can stop an unresolved exchange; it is a deliberate limitation of
+this teaching search, not a declaration of a draw or a legal pass in check.
+The bound limits recursion depth, not elapsed time or total node count.
+
+Mate scores still use the actual `ply`. UCI mate detection now allows the
+whole 64-ply range, because a mate can be found beyond the requested normal
+depth. `info depth` remains the requested depth. Nodes count each visited
+position once, including the horizon and every quiescence continuation;
+changing search mode does not count the same position again.
+
+This lesson changes the searched tree, so scores, best moves, and node counts
+can differ from lessons 14 through 16. For example, starting-position counts
+at depths 1 through 4 are now 21, 62, 529, and 1,894. Extending some branches
+can change later cutoffs, so total nodes need not increase at every depth.
+These are regression counts for our current engine, not Minifish parity.
+
+The UCI tests cover the changed recapture behavior, promotions beyond the
+horizon for both colors, deterministic counts, and the existing special moves
+and terminal positions. A small C test program also starts search directly
+at depth zero and at the recursion boundary. It checks stand-pat cutoffs,
+quiet check evasions, en passant, underpromotion to avoid stalemate, mate
+distance beyond normal depth, and terminal detection at the cap.
 
 ## Build and try it
 
@@ -919,7 +1000,25 @@ After compiling, run:
 ```
 
 On other systems, use `python3 tests/test_uci.py build/learning-chess`.
-The tests talk to a running process through pipes, checking that replies arrive
+Also build and run the focused search checks with the same compiler:
+
+```powershell
+& C:\msys64\ucrt64\bin\gcc.exe -std=c11 -Wall -Wextra -Wpedantic -O0 -g tests\test_search.c -o build\test-search.exe
+.\build\test-search.exe
+```
+
+On other systems, use:
+
+```sh
+gcc -std=c11 -Wall -Wextra -Wpedantic -O0 -g tests/test_search.c -o build/test-search
+./build/test-search
+```
+
+The C test file includes `main.c`, temporarily renaming its `main` function
+so the tests can supply their own entry point and call the internal search.
+It uses standard C assertions; compile it without `NDEBUG` so checks run.
+
+The Python tests talk to a running process through pipes, checking that replies arrive
 before input closes. They also check whitespace, unknown commands, oversized
 lines, `quit`, and end of input. The board test checks every displayed rank,
 piece, and coordinate label, then repeats the display to check that inspection

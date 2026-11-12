@@ -1133,43 +1133,39 @@ class UciTests(unittest.TestCase):
         self.expect_exit()
 
     def test_negamax_start_position_nodes_ties_and_preservation(self):
-        for depth, nodes in [(1, 21), (2, 60), (3, 546), (4, 1594), (1, 21)]:
+        for depth, nodes in [(1, 21), (2, 62), (3, 529), (4, 1894), (1, 21)]:
             self.expect_search(depth, "cp", 0, "b1a3", nodes)
             self.expect_position(START_POSITION)
         self.send("quit\n")
         self.expect_exit()
 
-    def test_alpha_beta_matches_exhaustive_scores(self):
-        # Scores and exhaustive node counts come from lesson 14 (e62dcad).
-        # Lesson 16 searches captures and promotions first, changing the
-        # tied best moves in the opening and White's promotion fixture.
+    def test_search_regression_positions(self):
+        # Depth three now includes quiescence. Scores and node counts need
+        # not match the fixed material leaves used in lessons 14 through 16.
         fixtures = [
             ("startpos moves e2e4 e7e5 g1f3 b8c6 f1b5 a7a6",
-             "cp", 100, "b5c6", 33699),
+             "cp", 100, "b5c6"),
             ("fen r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
-             "cp", 300, "e2a6", 99950),
+             "cp", 0, "e2a6"),
             ("fen 7k/8/4p3/3r4/8/8/8/K2Q4 w - - 0 1",
-             "cp", 800, "d1h1", 6475),
+             "cp", 400, "d1e1"),
             ("fen 7k/4P3/8/8/8/8/8/7K w - - 0 1",
-             "cp", 900, "e7e8q", 242),
+             "cp", 900, "e7e8q"),
             ("fen 7k/8/8/8/8/8/4p3/7K b - - 0 1",
-             "cp", 900, "e2e1q", 242),
+             "cp", 900, "e2e1q"),
             ("fen 7k/8/8/3pP3/8/8/8/7K w - d6 17 42",
-             "cp", 100, "e5d6", 137),
+             "cp", 100, "e5d6"),
             ("fen 7k/8/5KQ1/8/8/8/8/8 w - - 0 1",
-             "mate", 1, "g6g7", 412),
+             "mate", 1, "g6g7"),
             ("fen 8/8/8/8/8/5kq1/8/7K b - - 0 1",
-             "mate", 1, "g3g2", 412),
+             "mate", 1, "g3g2"),
             ("fen 7k/8/5K2/6Q1/8/8/8/8 b - - 0 1",
-             "mate", -1, "h8h7", 72),
+             "mate", -1, "h8h7"),
         ]
-        for position, kind, score, bestmove, exhaustive_nodes in fixtures:
+        for position, kind, score, bestmove in fixtures:
             with self.subTest(position=position):
                 self.send("position " + position + "\n")
-                nodes = self.expect_search(3, kind, score, bestmove)
-                # Some trees offer no opportunity to prune, such as the
-                # winning-mate fixtures with at most one reply per root move.
-                self.assertLessEqual(nodes, exhaustive_nodes)
+                self.expect_search(3, kind, score, bestmove)
         self.send("quit\n")
         self.expect_exit()
 
@@ -1194,14 +1190,13 @@ class UciTests(unittest.TestCase):
         self.send("quit\n")
         self.expect_exit()
 
-    def test_ordering_reduces_nodes_in_tactical_fixtures(self):
-        # Node counts before ordering are from lesson 15 (b3f2774).
+    def test_quiescence_sees_opening_recaptures(self):
+        # Bxc6 no longer appears to win a whole knight at depth one.
         self.send("position startpos moves e2e4 e7e5 g1f3 b8c6 f1b5 a7a6\n")
-        nodes = self.expect_search(3, "cp", 100, "b5c6", nodes=1013)
-        self.assertLess(nodes, 2609)
+        self.expect_search(1, "cp", 100, "b5c6", nodes=39)
+        self.expect_search(2, "cp", 100, "b5c6", nodes=140)
         self.send("position fen r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1\n")
-        nodes = self.expect_search(3, "cp", 300, "e2a6", nodes=2542)
-        self.assertLess(nodes, 9067)
+        self.expect_search(3, "cp", 0, "e2a6", nodes=16423)
         self.send("quit\n")
         self.expect_exit()
 
@@ -1214,11 +1209,22 @@ class UciTests(unittest.TestCase):
         self.send("quit\n")
         self.expect_exit()
 
-    def test_negamax_sees_recapture_at_depth_two(self):
+    def test_quiescence_sees_recapture_at_depth_one(self):
         self.send("position fen 7k/8/4p3/3r4/8/8/8/K2Q4 w - - 0 1\n")
-        # At one ply the rook looks free. At two plies its pawn recaptures.
-        self.expect_search(1, "cp", 800, "d1d5")
+        # Quiescence sees exd5 beyond the horizon and rejects Qxd5 already
+        # at depth one, instead of stopping after the apparent rook gain.
+        self.expect_search(1, "cp", 300, "d1b1", nodes=37)
         self.expect_search(2, "cp", 300, "d1b1")
+        self.send("quit\n")
+        self.expect_exit()
+
+    def test_quiescence_promotes_beyond_the_horizon(self):
+        # Only the king escape is searched at normal depth. The opponent's
+        # non-capturing promotion must then be found by quiescence.
+        for fen, bestmove in [("8/8/8/8/8/5k2/4p3/r6K w - - 0 1", "h1h2"),
+                              ("R6k/4P3/5K2/8/8/8/8/8 b - - 0 1", "h8h7")]:
+            self.send("position fen " + fen + "\n")
+            self.expect_search(1, "cp", -1400, bestmove)
         self.send("quit\n")
         self.expect_exit()
 

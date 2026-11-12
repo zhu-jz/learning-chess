@@ -43,6 +43,9 @@ enum { MAX_MOVES = 64 * 64 * 4 };
 
 /* Even 64 queens score only 57600 with our teaching material values. */
 enum { MATE_SCORE = 100000, INFINITE_SCORE = 100001, MAX_SEARCH_DEPTH = 4 };
+/* Quiescence can follow checks beyond the requested depth. Bound recursion
+   until repetition handling can also stop repeated positions. */
+enum { MAX_SEARCH_PLY = 64 };
 
 struct SearchResult {
     int score;
@@ -823,7 +826,8 @@ static void order_moves(const struct Position *position, struct Move moves[], in
 }
 
 /* Scores belong to the side to move. Alpha is the threshold to improve;
-   beta is the threshold where the caller can reject this branch. */
+   beta is the threshold where the caller can reject this branch.
+   At depth zero, the same recursion becomes a quiescence search. */
 static int negamax(const struct Position *position, int depth, int ply,
                    int alpha, int beta,
                    unsigned long long *nodes, struct SearchResult *result)
@@ -851,20 +855,43 @@ static int negamax(const struct Position *position, int depth, int ply,
         free(moves);
         return 1;
     }
-    if (depth == 0) {
+    /* Terminal results above take priority over this emergency limit.
+       At the limit, material is only an approximation, even when in check. */
+    if (ply >= MAX_SEARCH_PLY) {
         result->score = evaluate(position);
         free(moves);
         return 1;
     }
 
-    order_moves(position, moves, count);
     result->score = -INFINITE_SCORE;
+    int in_check = is_in_check(position, position->side_to_move);
+    if (depth == 0 && !in_check) {
+        /* Stand pat: use material as our baseline while considering captures
+           and promotions. This is a search assumption, not a legal pass. */
+        result->score = evaluate(position);
+        if (result->score >= beta) {
+            free(moves);
+            return 1;
+        }
+        if (result->score > alpha)
+            alpha = result->score;
+    }
+
+    order_moves(position, moves, count);
     for (int i = 0; i < count; i++) {
+        /* In check we must search every evasion, including quiet moves.
+           Otherwise quiescence searches only captures and promotions. */
+        if (depth == 0 && !in_check && position->board[moves[i].to] == EMPTY
+            && moves[i].en_passant_capture_square == -1 && moves[i].promotion == EMPTY)
+            continue;
         struct Position child = *position;
         struct SearchResult reply;
+        int child_depth = depth;
+        if (child_depth > 0)
+            child_depth--;
         /* Changing sides negates scores and reverses the window's ends. */
         if (!apply_move(&child, moves[i])
-            || !negamax(&child, depth - 1, ply + 1, -beta, -alpha, nodes, &reply)) {
+            || !negamax(&child, child_depth, ply + 1, -beta, -alpha, nodes, &reply)) {
             free(moves);
             return 0;
         }
@@ -915,7 +942,7 @@ static void read_go_command(const struct Position *position)
     }
 
     printf("info depth %d score ", depth);
-    if (abs(result.score) >= MATE_SCORE - MAX_SEARCH_DEPTH) {
+    if (abs(result.score) >= MATE_SCORE - MAX_SEARCH_PLY) {
         int plies = MATE_SCORE - abs(result.score);
         int moves_to_mate = (plies + 1) / 2;
         if (result.score < 0)
