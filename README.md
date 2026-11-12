@@ -686,16 +686,16 @@ position startpos
 go depth 2
 ```
 
-The response is:
+The response in lesson 14 was (lesson 15 reduces the node count):
 
 ```text
 info depth 2 score cp 0 nodes 421
 bestmove b1a3
 ```
 
-`negamax` examines every legal move, applies it to a copied position, and calls
-itself with one less ply remaining. The child reports a score from the
-opponent's perspective, so the parent negates it. The move with the greatest
+In this lesson, `negamax` examines every legal move, applies it to a copied
+position, and calls itself with one less ply remaining. The child reports a
+score from the opponent's perspective, so the parent negates it. The move with the greatest
 negated score is the parent's best move. This single rule handles both colors.
 
 At depth zero the function uses the material evaluator, but first checks
@@ -737,9 +737,75 @@ counts are not yet expected to match Minifish's search.
 The command runs synchronously and accepts only `go depth 1` through
 `go depth 4`. Other limits and extra arguments are rejected. During a search,
 input commands wait until it finishes; `stop`, clock-based play, and responsive
-input handling belong to later lessons. The depth cap keeps this unpruned
+input handling belong to later lessons. The depth cap keeps the
 teaching search bounded. Reported depth is the requested limit, even when a
 terminal root finishes immediately.
+
+## Lesson 15: skipping branches with alpha-beta pruning
+
+Alpha-beta pruning keeps the same fixed-depth answer while avoiding work that
+cannot improve the root's choice. The search still uses negamax, copied
+positions, material evaluation, and the same move order. The change adds two
+integer parameters and a stopping condition to the existing loop.
+
+`alpha` is the score threshold we need to improve. `beta` is the threshold
+where the caller already has enough information to reject this branch.
+For example, suppose the root has found a move worth 100. While examining
+another move, we find an opponent reply worth -50 to the opponent, or 50 to
+the root. The opponent can choose that reply, so this root move is worth at
+most 50. There is no need to examine the opponent's remaining replies: the
+root already has its 100-point alternative.
+
+Changing sides negates scores and reverses their order. A parent's window
+`alpha, beta` therefore becomes `-beta, -alpha` in the recursive call.
+After each reply, we negate its score, update the best result, and raise
+`alpha` if the score improves it. Once `alpha >= beta`, we stop the loop.
+Equality is enough: a tied alternative cannot replace our first choice.
+The move list is freed after the loop, including when it ends early.
+
+The function returns the best score it encountered, even if that score lies
+outside the original window. This convention is called *fail-soft*. An
+internal call's score need not be exact: a result at or below its original
+alpha is an upper bound, and a result at or above beta is a lower bound.
+A result strictly inside the window is exact. The caller needs these bounds
+only to decide whether to continue searching a branch.
+
+At the root, the window starts at `-INFINITE_SCORE, INFINITE_SCORE`, beyond
+every material and mate score. The root result is exact. A later root move
+whose bound merely ties the best score cannot replace it, because the move
+update still uses a strict `>` comparison. The chosen move therefore matches
+exhaustive negamax, including its first-generated-move tie rule.
+
+Starting-position `go depth 2` now prints:
+
+```text
+info depth 2 score cp 0 nodes 60
+bestmove b1a3
+```
+
+The first root move visits its child and all 20 replies. Each of the other
+19 root moves needs only its child and one reply to establish a tie:
+`1 + 21 + 19 * 2 = 60` nodes. Our node definition is unchanged; skipped
+recursive calls simply do not contribute to the count.
+
+| Starting-position depth | Exhaustive negamax | Alpha-beta |
+| --- | ---: | ---: |
+| 1 | 21 | 21 |
+| 2 | 421 | 60 |
+| 3 | 9,323 | 546 |
+| 4 | 206,604 | 2,215 |
+
+The tests retain scores and chosen moves recorded from lesson 14's exhaustive
+engine, and check that pruning never visits more nodes on those deeper fixtures.
+Some trees offer no opportunity to prune, so their counts stay the same.
+They cover opening play, castling rights, recaptures, promotions, en passant,
+and winning and losing mates. Starting-position node counts are also exact
+regressions for this move order and pruning rule.
+
+The search still accepts depths 1 through 4 and runs synchronously. The earlier
+limitations on evaluation and draw handling remain. Move ordering can improve
+pruning further, but belongs to another lesson. These node counts describe
+our teaching search; they do not yet reproduce Minifish.
 
 ## Build and try it
 

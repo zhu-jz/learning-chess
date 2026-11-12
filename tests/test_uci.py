@@ -160,6 +160,7 @@ class UciTests(unittest.TestCase):
         self.expect("bestmove " + bestmove)
         self.send("isready\n")
         self.expect("readyok")
+        return int(line.split()[-1])
 
     def read_moves(self):
         self.send("moves\n")
@@ -1132,9 +1133,42 @@ class UciTests(unittest.TestCase):
         self.expect_exit()
 
     def test_negamax_start_position_nodes_ties_and_preservation(self):
-        for depth, nodes in [(1, 21), (2, 421), (3, 9323), (1, 21)]:
+        for depth, nodes in [(1, 21), (2, 60), (3, 546), (4, 2215), (1, 21)]:
             self.expect_search(depth, "cp", 0, "b1a3", nodes)
             self.expect_position(START_POSITION)
+        self.send("quit\n")
+        self.expect_exit()
+
+    def test_alpha_beta_matches_exhaustive_search(self):
+        # Scores, first best moves, and node counts recorded from lesson 14
+        # (e62dcad). These are fixed-depth results, not chess-strength claims.
+        fixtures = [
+            ("startpos moves e2e4 e7e5 g1f3 b8c6 f1b5 a7a6",
+             "cp", 100, "b5f1", 33699),
+            ("fen r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+             "cp", 300, "e2a6", 99950),
+            ("fen 7k/8/4p3/3r4/8/8/8/K2Q4 w - - 0 1",
+             "cp", 800, "d1h1", 6475),
+            ("fen 7k/4P3/8/8/8/8/8/7K w - - 0 1",
+             "cp", 900, "h1g1", 242),
+            ("fen 7k/8/8/8/8/8/4p3/7K b - - 0 1",
+             "cp", 900, "e2e1q", 242),
+            ("fen 7k/8/8/3pP3/8/8/8/7K w - d6 17 42",
+             "cp", 100, "e5d6", 137),
+            ("fen 7k/8/5KQ1/8/8/8/8/8 w - - 0 1",
+             "mate", 1, "g6g7", 412),
+            ("fen 8/8/8/8/8/5kq1/8/7K b - - 0 1",
+             "mate", 1, "g3g2", 412),
+            ("fen 7k/8/5K2/6Q1/8/8/8/8 b - - 0 1",
+             "mate", -1, "h8h7", 72),
+        ]
+        for position, kind, score, bestmove, exhaustive_nodes in fixtures:
+            with self.subTest(position=position):
+                self.send("position " + position + "\n")
+                nodes = self.expect_search(3, kind, score, bestmove)
+                # Some trees offer no opportunity to prune, such as the
+                # winning-mate fixtures with at most one reply per root move.
+                self.assertLessEqual(nodes, exhaustive_nodes)
         self.send("quit\n")
         self.expect_exit()
 

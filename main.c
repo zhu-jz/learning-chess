@@ -793,9 +793,10 @@ static void read_perft_command(const struct Position *position)
     printf("info string perft depth %d nodes %llu\n", depth, nodes);
 }
 
-/* Search every legal move. Scores always belong to the side to move, so a
-   child's score is negated when it is viewed from the parent's side. */
+/* Scores belong to the side to move. Alpha is the threshold to improve;
+   beta is the threshold where the caller can reject this branch. */
 static int negamax(const struct Position *position, int depth, int ply,
+                   int alpha, int beta,
                    unsigned long long *nodes, struct SearchResult *result)
 {
     if (*nodes == ULLONG_MAX)
@@ -831,7 +832,9 @@ static int negamax(const struct Position *position, int depth, int ply,
     for (int i = 0; i < count; i++) {
         struct Position child = *position;
         struct SearchResult reply;
-        if (!apply_move(&child, moves[i]) || !negamax(&child, depth - 1, ply + 1, nodes, &reply)) {
+        /* Changing sides negates scores and reverses the window's ends. */
+        if (!apply_move(&child, moves[i])
+            || !negamax(&child, depth - 1, ply + 1, -beta, -alpha, nodes, &reply)) {
             free(moves);
             return 0;
         }
@@ -842,6 +845,12 @@ static int negamax(const struct Position *position, int depth, int ply,
             result->move = moves[i];
             result->has_move = 1;
         }
+        if (score > alpha)
+            alpha = score;
+        /* The caller already has an alternative at least this good.
+           Keep the score we found, but skip the remaining moves. */
+        if (alpha >= beta)
+            break;
     }
     free(moves);
     return 1;
@@ -870,7 +879,7 @@ static void read_go_command(const struct Position *position)
     root.fullmove_number = 1;
     unsigned long long nodes = 0;
     struct SearchResult result;
-    if (!negamax(&root, depth, 0, &nodes, &result)) {
+    if (!negamax(&root, depth, 0, -INFINITE_SCORE, INFINITE_SCORE, &nodes, &result)) {
         puts("info string Cannot complete search");
         return;
     }
