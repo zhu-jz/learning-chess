@@ -774,7 +774,8 @@ At the root, the window starts at `-INFINITE_SCORE, INFINITE_SCORE`, beyond
 every material and mate score. The root result is exact. A later root move
 whose bound merely ties the best score cannot replace it, because the move
 update still uses a strict `>` comparison. The chosen move therefore matches
-exhaustive negamax, including its first-generated-move tie rule.
+exhaustive negamax with the same move order, including its first-move tie rule.
+Lesson 16 changes that order and can therefore select a different tied move.
 
 Starting-position `go depth 2` now prints:
 
@@ -788,6 +789,8 @@ The first root move visits its child and all 20 replies. Each of the other
 `1 + 21 + 19 * 2 = 60` nodes. Our node definition is unchanged; skipped
 recursive calls simply do not contribute to the count.
 
+These counts describe lesson 15, before adding move ordering:
+
 | Starting-position depth | Exhaustive negamax | Alpha-beta |
 | --- | ---: | ---: |
 | 1 | 21 | 21 |
@@ -795,17 +798,88 @@ recursive calls simply do not contribute to the count.
 | 3 | 9,323 | 546 |
 | 4 | 206,604 | 2,215 |
 
-The tests retain scores and chosen moves recorded from lesson 14's exhaustive
-engine, and check that pruning never visits more nodes on those deeper fixtures.
+The lesson 15 tests retain scores and chosen moves recorded from lesson 14's
+exhaustive engine, and check that pruning never visits more nodes on those deeper fixtures.
 Some trees offer no opportunity to prune, so their counts stay the same.
 They cover opening play, castling rights, recaptures, promotions, en passant,
 and winning and losing mates. Starting-position node counts are also exact
 regressions for this move order and pruning rule.
 
 The search still accepts depths 1 through 4 and runs synchronously. The earlier
-limitations on evaluation and draw handling remain. Move ordering can improve
-pruning further, but belongs to another lesson. These node counts describe
+limitations on evaluation and draw handling remain. Lesson 16 adds move ordering
+to improve pruning further. These node counts describe
 our teaching search; they do not yet reproduce Minifish.
+
+## Lesson 16: searching captures and promotions first
+
+Alpha-beta can stop a branch sooner when it finds a strong reply early.
+`move_priority` gives each move a simple priority: the material gained
+immediately by capturing a piece or promoting a pawn. `order_moves` then
+places larger priorities first. Both functions use the existing teaching
+piece values.
+
+| Move | Priority |
+| --- | ---: |
+| Quiet move, including castling | 0 |
+| Capture a pawn, including en passant | 100 |
+| Capture a rook | 500 |
+| Capture a queen | 900 |
+| Promote to knight or bishop without capturing | 300 - 100 = 200 |
+| Promote to rook without capturing | 500 - 100 = 400 |
+| Promote to queen without capturing | 900 - 100 = 800 |
+| Capture a rook and promote to queen | 500 + 800 = 1,300 |
+
+En passant needs special attention: the destination is empty, so we read the
+captured pawn from `en_passant_capture_square`. For a promotion, subtracting
+the pawn's value counts only the extra material gained. A capture promotion
+gets both contributions. Piece values are the same for both colors.
+
+This priority is a guess about search order. It does not consider whether a
+captured piece is defended, the value of the capturing piece, or king safety
+beyond the legal-move check already done by the generator. Search still
+determines the score. For example, the defended-rook exercise from lesson 14
+tries the rook capture first but rejects it after seeing the recapture at
+depth two. No moves are removed by ordering.
+
+`order_moves` uses insertion sort. Before iteration `i`, the moves before `i`
+are already ordered. Save move `i`, shift each preceding move with a lower
+priority one place to the right, then put the saved move into the gap.
+Equal priorities are never shifted past each other. This makes the sort
+*stable*: it preserves generation order within each priority. It uses a
+temporary move and ordinary loops, with no extra array or comparison callback.
+For `n` moves it can take roughly `n * n` comparisons; this is a readability
+choice, and sorting work is not included in search-node counts.
+
+Search orders its local list after the terminal and depth-zero checks.
+Leaves do not need sorting because they search no children. Move generation,
+the `moves` command, and perft retain their original enumeration order.
+
+The strict `>` update in negamax now keeps the first **searched** move when
+search scores tie. Different priorities can therefore change the chosen
+move without changing the score. In the White promotion fixture
+`7k/4P3/8/8/8/8/8/7K w - - 0 1`, depth three previously chose `h1g1`:
+delaying promotion still reached the same material score. Now `e7e8q` is
+searched first and keeps that tie. Equal priorities still use the old
+generation order, so repeated searches remain deterministic.
+
+Measured node counts with the same evaluation and depth limits are:
+
+| Position and depth | Lesson 15 | With ordering |
+| --- | ---: | ---: |
+| Starting position, depth 4 | 2,215 | 1,594 |
+| After `e4 e5 Nf3 Nc6 Bb5 a6`, depth 3 | 2,609 | 1,013 |
+| Kiwipete from lesson 12, depth 3 | 9,067 | 2,542 |
+
+Ordering does not guarantee fewer nodes on every position, and fewer nodes
+alone do not guarantee faster execution because sorting also costs work.
+The tests check these specific reductions, preserve the earlier exhaustive
+scores, and cover capture ties, en passant priority, promotion choices, and
+unchanged move lists after search. Changed tied choices were also checked
+with the previous engine by playing the new move and searching its replies.
+
+Depth limits, synchronous UCI input, material evaluation, and the earlier draw
+limitations are unchanged. This simple priority is not Minifish's complete
+move-ordering policy; exact reference parity remains a later target.
 
 ## Build and try it
 

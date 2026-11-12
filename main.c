@@ -793,6 +793,35 @@ static void read_perft_command(const struct Position *position)
     printf("info string perft depth %d nodes %llu\n", depth, nodes);
 }
 
+/* Immediate material gain is a guess about which moves to search first.
+   It does not account for recaptures and never replaces the search score. */
+static int move_priority(const struct Position *position, struct Move move)
+{
+    int captured = position->board[move.to];
+    if (move.en_passant_capture_square != -1)
+        captured = position->board[move.en_passant_capture_square];
+    int priority = piece_value(captured);
+    if (move.promotion != EMPTY)
+        priority += piece_value(move.promotion) - piece_value(position->board[move.from]);
+    return priority;
+}
+
+/* Insertion sort: put each move into the already ordered prefix. Moving
+   only past lower priorities preserves generation order when priorities tie. */
+static void order_moves(const struct Position *position, struct Move moves[], int count)
+{
+    for (int i = 1; i < count; i++) {
+        struct Move move = moves[i];
+        int priority = move_priority(position, move);
+        int j = i;
+        while (j > 0 && move_priority(position, moves[j - 1]) < priority) {
+            moves[j] = moves[j - 1];
+            j--;
+        }
+        moves[j] = move;
+    }
+}
+
 /* Scores belong to the side to move. Alpha is the threshold to improve;
    beta is the threshold where the caller can reject this branch. */
 static int negamax(const struct Position *position, int depth, int ply,
@@ -828,6 +857,7 @@ static int negamax(const struct Position *position, int depth, int ply,
         return 1;
     }
 
+    order_moves(position, moves, count);
     result->score = -INFINITE_SCORE;
     for (int i = 0; i < count; i++) {
         struct Position child = *position;
@@ -839,7 +869,7 @@ static int negamax(const struct Position *position, int depth, int ply,
             return 0;
         }
         int score = -reply.score;
-        /* Strict comparison keeps the first generated move when scores tie. */
+        /* Strict comparison keeps the first searched move when scores tie. */
         if (score > result->score) {
             result->score = score;
             result->move = moves[i];
