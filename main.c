@@ -913,6 +913,23 @@ static int negamax(const struct Position *position, int depth, int ply,
     return 1;
 }
 
+static void print_search_info(int depth, int score, unsigned long long nodes)
+{
+    printf("info depth %d score ", depth);
+    if (abs(score) >= MATE_SCORE - MAX_SEARCH_PLY) {
+        int plies = MATE_SCORE - abs(score);
+        int moves_to_mate = (plies + 1) / 2;
+        if (score < 0)
+            moves_to_mate = -moves_to_mate;
+        printf("mate %d", moves_to_mate);
+    } else {
+        printf("cp %d", score);
+    }
+    printf(" nodes %llu\n", nodes);
+    /* Let a GUI see this completed iteration while the next one runs. */
+    fflush(stdout);
+}
+
 static void read_go_command(const struct Position *position)
 {
     char *limit = strtok(NULL, " \t\r");
@@ -934,24 +951,22 @@ static void read_go_command(const struct Position *position)
     struct Position root = *position;
     root.halfmove_clock = 0;
     root.fullmove_number = 1;
+    /* Count all work for this go command, including the shallower searches. */
     unsigned long long nodes = 0;
     struct SearchResult result;
-    if (!negamax(&root, depth, 0, -INFINITE_SCORE, INFINITE_SCORE, &nodes, &result)) {
-        puts("info string Cannot complete search");
-        return;
+    for (int current_depth = 1; current_depth <= depth; current_depth++) {
+        struct SearchResult iteration;
+        if (!negamax(&root, current_depth, 0, -INFINITE_SCORE, INFINITE_SCORE,
+                     &nodes, &iteration)) {
+            puts("info string Cannot complete search");
+            if (current_depth == 1)
+                return;
+            break;
+        }
+        /* A failed iteration must not replace the last completed result. */
+        result = iteration;
+        print_search_info(current_depth, result.score, nodes);
     }
-
-    printf("info depth %d score ", depth);
-    if (abs(result.score) >= MATE_SCORE - MAX_SEARCH_PLY) {
-        int plies = MATE_SCORE - abs(result.score);
-        int moves_to_mate = (plies + 1) / 2;
-        if (result.score < 0)
-            moves_to_mate = -moves_to_mate;
-        printf("mate %d", moves_to_mate);
-    } else {
-        printf("cp %d", result.score);
-    }
-    printf(" nodes %llu\n", nodes);
     if (result.has_move) {
         char text[6];
         move_to_string(result.move, text);

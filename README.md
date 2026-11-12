@@ -945,14 +945,15 @@ The bound limits recursion depth, not elapsed time or total node count.
 
 Mate scores still use the actual `ply`. UCI mate detection now allows the
 whole 64-ply range, because a mate can be found beyond the requested normal
-depth. `info depth` remains the requested depth. Nodes count each visited
-position once, including the horizon and every quiescence continuation;
+depth. In lesson 17, `info depth` reports the requested depth. Nodes count
+each visited position once, including the horizon and every quiescence continuation;
 changing search mode does not count the same position again.
 
 This lesson changes the searched tree, so scores, best moves, and node counts
 can differ from lessons 14 through 16. For example, starting-position counts
-at depths 1 through 4 are now 21, 62, 529, and 1,894. Extending some branches
-can change later cutoffs, so total nodes need not increase at every depth.
+for separate searches at depths 1 through 4 are 21, 62, 529, and 1,894.
+Extending some branches can change later cutoffs, so total nodes need not
+increase at every depth.
 These are regression counts for our current engine, not Minifish parity.
 
 The UCI tests cover the changed recapture behavior, promotions beyond the
@@ -961,6 +962,75 @@ and terminal positions. A small C test program also starts search directly
 at depth zero and at the recursion boundary. It checks stand-pat cutoffs,
 quiet check evasions, en passant, underpromotion to avoid stalemate, mate
 distance beyond normal depth, and terminal detection at the cap.
+
+## Lesson 18: reaching the requested depth one step at a time
+
+`go depth N` now searches depths 1, 2, and so on through N. This is called
+*iterative deepening*. After each completed iteration, the engine reports its
+score and the total nodes visited so far. It sends one `bestmove` after the
+last iteration.
+
+For example, `position startpos` followed by `go depth 3` produces:
+
+```text
+info depth 1 score cp 0 nodes 21
+info depth 2 score cp 0 nodes 83
+info depth 3 score cp 0 nodes 612
+bestmove b1a3
+```
+
+The new loop is in `read_go_command`. Each call to `negamax` starts from the
+same root position with a full alpha-beta window and a larger normal depth.
+Quiescence still extends tactical lines beyond that depth. Move ordering and
+search evaluation are unchanged, so each iteration gives the same answer
+as a separate search at that depth in lesson 17.
+
+The node counter starts at zero once per `go` command and is shared by all
+iterations. It includes repeated work, including a root visit for each
+iteration. Thus the starting-position totals are:
+
+| Completed depth | Nodes in this iteration | Cumulative nodes reported |
+| --- | ---: | ---: |
+| 1 | 21 | 21 |
+| 2 | 62 | 83 |
+| 3 | 529 | 612 |
+| 4 | 1,894 | 2,506 |
+
+A new `go` command resets the counter. Searching does not play the chosen
+move or change the current position. The `perft` command keeps its existing
+meaning and output.
+
+Each iteration writes into a temporary `SearchResult`. Only a successful
+search replaces the saved result. This matters when a later search fails,
+for example because a move-list allocation fails: the engine reports the
+error and returns the best move from the last completed iteration. If the
+first iteration fails, it reports the error without inventing a result.
+An incomplete iteration never produces an `info depth` report.
+
+The saved result is replaced even if the score becomes worse. Deeper search
+can uncover a recapture or a forced loss; its result is more informed than
+the shallower one. In our defended-rook fixture, depths one and two choose
+`d1b1` with score 300, while depth three chooses `d1e1` with score 400. The
+final response must use the depth-three move. Another fixture changes from
+a material score at depth one to a losing mate score at depth two.
+
+`print_search_info` holds the existing score-formatting code and flushes
+standard output after each report. A GUI can therefore display a completed
+iteration while the next one runs. Input handling is still synchronous:
+`stop` and clock-based play remain later work. The supported depth range is
+still 1 through 4.
+
+For now, all requested iterations run, even when a mate is found or the root
+has no legal moves. A terminal root visits one node per iteration and ends
+with `bestmove 0000`. This keeps the loop simple and its output predictable.
+We also do not yet use a previous iteration's best move to improve ordering,
+so the repeated searches add work. Iterative deepening provides progress
+reports and a completed result to retain when interruption is added later.
+
+Tests check the complete report sequence, cumulative counts, resets between
+commands, changing scores and moves, and a single final `bestmove`. The
+individual iteration results were also compared with the lesson 17 engine.
+Exact Minifish parity remains a later target.
 
 ## Build and try it
 

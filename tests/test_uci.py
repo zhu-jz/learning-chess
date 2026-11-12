@@ -149,11 +149,17 @@ class UciTests(unittest.TestCase):
 
     def expect_search(self, depth, kind, score, bestmove, nodes=None):
         self.send(f"go depth {depth}\n")
-        try:
-            line = self.output.get(timeout=60)
-        except Empty:
-            self.fail("Timed out waiting for search")
-        self.assertIsNotNone(line)
+        previous_nodes = 0
+        for current_depth in range(1, depth + 1):
+            try:
+                line = self.output.get(timeout=60)
+            except Empty:
+                self.fail("Timed out waiting for search")
+            self.assertIsNotNone(line)
+            self.assertRegex(line, rf"^info depth {current_depth} score (cp|mate) -?[0-9]+ nodes [0-9]+$")
+            current_nodes = int(line.split()[-1])
+            self.assertGreater(current_nodes, previous_nodes)
+            previous_nodes = current_nodes
         self.assertRegex(line, rf"^info depth {depth} score {kind} {score} nodes [0-9]+$")
         if nodes is not None:
             self.assertEqual(int(line.split()[-1]), nodes)
@@ -1133,9 +1139,38 @@ class UciTests(unittest.TestCase):
         self.expect_exit()
 
     def test_negamax_start_position_nodes_ties_and_preservation(self):
-        for depth, nodes in [(1, 21), (2, 62), (3, 529), (4, 1894), (1, 21)]:
+        for depth, nodes in [(1, 21), (2, 83), (3, 612), (4, 2506), (1, 21)]:
             self.expect_search(depth, "cp", 0, "b1a3", nodes)
             self.expect_position(START_POSITION)
+        self.send("quit\n")
+        self.expect_exit()
+
+    def test_iterative_deepening_reports_all_iterations(self):
+        self.send("go depth 4\n")
+        for depth, nodes in [(1, 21), (2, 83), (3, 612), (4, 2506)]:
+            self.expect(f"info depth {depth} score cp 0 nodes {nodes}", timeout=60)
+        self.expect("bestmove b1a3")
+        self.expect_position(START_POSITION)
+        # A new go command starts counting from zero again.
+        self.send("go depth 2\n")
+        self.expect("info depth 1 score cp 0 nodes 21", timeout=60)
+        self.expect("info depth 2 score cp 0 nodes 83", timeout=60)
+        self.expect("bestmove b1a3")
+        self.send("quit\n")
+        self.expect_exit()
+
+    def test_iterative_deepening_uses_the_deepest_result(self):
+        self.send("position fen 7k/8/4p3/3r4/8/8/8/K2Q4 w - - 0 1\ngo depth 3\n")
+        self.expect("info depth 1 score cp 300 nodes 37", timeout=60)
+        self.expect("info depth 2 score cp 300 nodes 212", timeout=60)
+        self.expect("info depth 3 score cp 400 nodes 1023", timeout=60)
+        # Depths one and two choose d1b1; depth three finds d1e1.
+        self.expect("bestmove d1e1")
+        self.send("position fen 7k/8/5K2/6Q1/8/8/8/8 b - - 0 1\ngo depth 3\n")
+        self.expect("info depth 1 score cp -900 nodes 2", timeout=60)
+        self.expect("info depth 2 score mate -1 nodes 35", timeout=60)
+        self.expect("info depth 3 score mate -1 nodes 87", timeout=60)
+        self.expect("bestmove h8h7")
         self.send("quit\n")
         self.expect_exit()
 
@@ -1194,9 +1229,9 @@ class UciTests(unittest.TestCase):
         # Bxc6 no longer appears to win a whole knight at depth one.
         self.send("position startpos moves e2e4 e7e5 g1f3 b8c6 f1b5 a7a6\n")
         self.expect_search(1, "cp", 100, "b5c6", nodes=39)
-        self.expect_search(2, "cp", 100, "b5c6", nodes=140)
+        self.expect_search(2, "cp", 100, "b5c6", nodes=179)
         self.send("position fen r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1\n")
-        self.expect_search(3, "cp", 0, "e2a6", nodes=16423)
+        self.expect_search(3, "cp", 0, "e2a6", nodes=20762)
         self.send("quit\n")
         self.expect_exit()
 
@@ -1256,7 +1291,7 @@ class UciTests(unittest.TestCase):
         for fen, kind in [("k7/1Q6/2K5/8/8/8/8/8 b - - 0 1", "mate"),
                           ("k7/8/1QK5/8/8/8/8/8 b - - 0 1", "cp")]:
             self.send("position fen " + fen + "\n")
-            self.expect_search(4, kind, 0, "0000", nodes=1)
+            self.expect_search(4, kind, 0, "0000", nodes=4)
         self.send("quit\n")
         self.expect_exit()
 
