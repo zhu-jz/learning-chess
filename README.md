@@ -732,8 +732,9 @@ the material evaluator understands opening development.
 This first search is deliberately limited. It has no alpha-beta pruning,
 quiescence search, move ordering, iterative deepening, or NNUE. It handles
 checkmate and stalemate, but does not yet adjudicate repetition, move-count
-draws, or insufficient material. Counters are normalized on the root copy,
-as in perft, while the current position stays unchanged. Its scores and node
+draws, or insufficient material. In lesson 14, counters are normalized on the
+root copy, as in perft, while the current position stays unchanged. Lesson 21
+keeps the halfmove clock for draw detection. These teaching scores and node
 counts are not yet expected to match Minifish's search.
 
 The command runs synchronously and accepts only `go depth 1` through
@@ -1168,6 +1169,78 @@ castling and en passant details, and resetting the preference between
 commands. The existing PV replay checks still pass, and comparisons against
 lesson 19 preserve every iteration's score. Exact Minifish move ordering and
 node-count parity remain later work.
+
+## Lesson 21: recognizing the fifty-move draw in search
+
+The FEN halfmove clock counts plies since the last pawn move or capture.
+One move by each side is two plies, so fifty moves by each side corresponds
+to 100 on this counter. Search now uses this field instead of resetting it
+to zero on its root copy. The existing `apply_move` function already resets
+it for pawn moves and captures, and increments it for other moves.
+
+We follow the reference's search policy: below the root, a counter of 100
+or more is scored as a draw unless the position is checkmate. The reference
+implements the threshold and checkmate exception in `is_draw`, in both
+`minifish-reference-2026-11-05/movegen.py` and
+`minifish-reference-2026-11-05/minifish/position.c`. Its main search skips
+this immediate-draw test at the root, where it still needs to choose a move.
+
+In our `negamax`, the existing no-legal-moves test runs first. It returns
+the mate score for checkmate or zero for stalemate. The new check then returns
+zero if `ply > 0` and `halfmove_clock >= 100`. This also applies at the
+quiescence horizon and before the hard recursion fallback. Being in check
+does not prevent this draw when the player still has a legal evasion.
+
+Consider White's queen advantage in this position:
+
+```text
+position fen 7k/8/8/8/8/8/8/K2Q4 w - - 99 1
+go depth 2
+info depth 1 score cp 0 nodes 24 pv a1b1
+info depth 2 score cp 0 nodes 48 pv a1b1
+bestmove a1b1
+```
+
+Every legal root move here is a non-capturing king or queen move. It raises
+the clock to 100, so the child returns a draw before evaluating the material
+advantage. At a starting clock of 98, depth one still scores the queen
+advantage as 900; depth two reaches the draw threshold. A draw node returns
+an empty continuation, so the root PV can stop early even though the final
+position has legal replies and unequal material. `eval` remains a material
+inspection command and does not adjudicate draws.
+
+Pawn moves, including non-capturing advances and promotions, reset the clock
+before the child is searched. Ordinary captures and en passant also reset
+it; castling does not. Thus a root pawn move or capture can keep a line going.
+Checkmate takes priority: in the earlier `g6g7` mate fixture with clock 99, the mating move
+raises the clock to 100, but its child still returns checkmate rather than
+a draw.
+
+The root exception is deliberate. A UCI `go` request asks the engine to
+choose a move, so a root with legal moves still gets a legal `bestmove` even
+at clock 100 or above. A pawn move or capture there can reset the counter,
+and a mating move can still win. This is the reference's search behavior;
+claiming a draw or ending the game is not a new UCI action in this lesson.
+`bestmove 0000` continues to mean that no legal root move exists.
+
+Large FEN counters need care because `apply_move` rejects integer overflow.
+On the root copy only, halfmove values above 100 are capped at 100: they have
+the same meaning for this threshold test, while leaving room for a root
+move to increment the counter. The fullmove number still starts at one on
+the copy because it has no effect on search. The user's current position
+keeps both original counters, including `INT_MAX` values. `perft` continues
+to ignore draw rules and normalize both counters on its own copy.
+
+Tests cover clocks 98, 99, 100, 101, and `INT_MAX`, both colors, pawn and
+capture resets, check evasions, mating moves at the boundary, terminal roots,
+and position preservation. The C tests exercise the quiescence and recursion
+boundaries directly, including an en passant reset with an artificial high
+clock to isolate that behavior.
+
+We use a fixed draw score of zero for clarity. Minifish's main search uses
+a small node-dependent adjustment to its draw score; its quiescence uses
+zero. Matching that distinction belongs to the later search-parity work.
+Repetition detection and other draw conditions also remain later lessons.
 
 ## Build and try it
 

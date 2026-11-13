@@ -875,6 +875,14 @@ static int negamax(const struct Position *position, int depth, int ply,
         free(moves);
         return 1;
     }
+    /* Fifty moves by each side means 100 plies without a pawn move or
+       capture. Checkmate above takes precedence. Like the reference, keep
+       searching at the root so the UCI command can still choose a move. */
+    if (ply > 0 && position->halfmove_clock >= 100) {
+        result->score = 0;
+        free(moves);
+        return 1;
+    }
     /* Terminal results above take priority over this emergency limit.
        At the limit, material is only an approximation, even when in check. */
     if (ply >= MAX_SEARCH_PLY) {
@@ -982,10 +990,12 @@ static void read_go_command(const struct Position *position)
         return;
     }
 
-    /* Draw rules are a later lesson. Clocks do not affect this search, so
-       normalize them on the copy to keep apply_move's counters in range. */
+    /* Keep the meaningful halfmove counter. Values above the draw threshold
+       are equivalent here; cap only the copy so a root move cannot overflow.
+       The fullmove number does not affect search and can start from one. */
     struct Position root = *position;
-    root.halfmove_clock = 0;
+    if (root.halfmove_clock > 100)
+        root.halfmove_clock = 100;
     root.fullmove_number = 1;
     /* Count all work for this go command, including the shallower searches. */
     unsigned long long nodes = 0;

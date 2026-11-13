@@ -219,6 +219,62 @@ int main(void)
     assert(success && result.score == 0 && nodes == 62);
     expect_move(result, "b1a3");
 
+    /* Below the root, 100 halfmoves is a draw even when material is unequal.
+       Test the quiescence horizon and the hard ply limit as well. */
+    position = position_from_fen("7k/8/8/8/8/8/8/K2Q4", "w", "-");
+    for (int clock = 98; clock <= 101; clock++) {
+        position.halfmove_clock = clock;
+        int expected = clock >= 100 ? 0 : 900;
+        result = search_at_horizon(position, 1, -INFINITE_SCORE, INFINITE_SCORE,
+                                   expected, &nodes);
+        assert(nodes == 1 && result.pv_length == 0);
+    }
+    position.halfmove_clock = INT_MAX;
+    result = search_at_horizon(position, MAX_SEARCH_PLY,
+                               -INFINITE_SCORE, INFINITE_SCORE, 0, &nodes);
+    assert(nodes == 1 && result.pv_length == 0);
+
+    /* Being in check does not prevent a draw if a legal evasion exists. */
+    position = position_from_fen("7k/2p5/5K2/8/8/8/8/7R", "b", "-");
+    position.halfmove_clock = 100;
+    result = search_at_horizon(position, 1, -600, -500, 0, &nodes);
+    assert(nodes == 1 && result.pv_length == 0);
+
+    /* Checkmate still wins over the counter, including at the ply limit. */
+    position = position_from_fen("k7/1Q6/2K5/8/8/8/8/8", "b", "-");
+    position.halfmove_clock = 100;
+    result = search_at_horizon(position, MAX_SEARCH_PLY, -INFINITE_SCORE, INFINITE_SCORE,
+                               -MATE_SCORE + MAX_SEARCH_PLY, &nodes);
+    assert(nodes == 1 && result.pv_length == 0);
+
+    /* Captures, en passant, and promotions reset the counter before the
+       next quiescence node tests for a draw. */
+    position = position_from_fen("7k/8/4p3/3Q4/8/8/8/K7", "b", "-");
+    position.halfmove_clock = 99;
+    result = search_at_horizon(position, 1, -INFINITE_SCORE, INFINITE_SCORE, 100, &nodes);
+    expect_move(result, "e6d5");
+    position = position_from_fen("7k/8/8/3pP3/8/8/8/K7", "w", "d6");
+    position.halfmove_clock = 99; /* Synthetic clock to isolate the reset. */
+    result = search_at_horizon(position, 1, -INFINITE_SCORE, INFINITE_SCORE, 100, &nodes);
+    expect_move(result, "e5d6");
+    position = position_from_fen("7k/4P3/8/8/8/8/8/7K", "w", "-");
+    position.halfmove_clock = 99;
+    result = search_at_horizon(position, 1, -INFINITE_SCORE, INFINITE_SCORE, 900, &nodes);
+    expect_move(result, "e7e8q");
+
+    /* Castling is a king move without a capture, so it does not reset the
+       clock. A root preference lets us inspect that drawn line directly. */
+    position = position_from_fen("7k/8/8/8/8/8/8/R3K3", "w", "-");
+    position.castling[WHITE_QUEENSIDE] = 1;
+    position.halfmove_clock = 99;
+    struct Move castle = { 4, 2, EMPTY, -1, 0, 3 }; /* e1c1, rook a1d1 */
+    nodes = 0;
+    success = negamax(&position, 2, 0, -INFINITE_SCORE, INFINITE_SCORE,
+                      &castle, &nodes, &result);
+    assert(success && result.score == 0 && result.pv_length == 1);
+    expect_move(result, "e1c1");
+    check_pv(position, result, 0);
+
     puts("Search checks passed");
     return 0;
 }

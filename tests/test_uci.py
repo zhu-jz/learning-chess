@@ -1372,7 +1372,66 @@ class UciTests(unittest.TestCase):
         self.send("quit\n")
         self.expect_exit()
 
-    def test_go_validation_and_counter_independence(self):
+    def test_fifty_move_threshold_and_root_choice(self):
+        for board, side, bestmove in [("7k/8/8/8/8/8/8/K2Q4", "w", "a1b1"),
+                                      ("k2q4/8/8/8/8/8/8/7K", "b", "a8a7")]:
+            for clock in [98, 99, 100, 101, 2147483647]:
+                self.send(f"position fen {board} {side} - - {clock} 1\n")
+                # At 98, one quiet move leaves material to evaluate. At 99,
+                # every quiet move reaches the draw threshold in the child.
+                self.expect_search(1, "cp", 900 if clock == 98 else 0, bestmove)
+                self.expect_search(2, "cp", 0, bestmove)
+        self.send("quit\n")
+        self.expect_exit()
+
+    def test_fifty_move_draw_pv_stops_at_threshold(self):
+        self.send("position fen 7k/8/8/8/8/8/8/K2Q4 w - - 99 1\ngo depth 3\n")
+        for depth in range(1, 4):
+            self.assertEqual(self.read_search_info(depth), ("cp", 0, 24 * depth, ["a1b1"]))
+        self.expect("bestmove a1b1")
+        # The PV can end with legal replies and unequal material: it is a
+        # counter draw, not stalemate or a stand-pat material evaluation.
+        self.send("position fen 7k/8/8/8/8/8/8/K2Q4 w - - 99 1 moves a1b1\n")
+        self.assertTrue(self.read_moves())
+        self.expect_eval(-900)
+        self.expect_state({"b1": "K", "d1": "Q", "h8": "k"}, side="b", halfmove=100)
+        self.send("quit\n")
+        self.expect_exit()
+
+    def test_fifty_move_resets_and_large_counter_preservation(self):
+        for clock in [99, 100, 2147483647]:
+            for pieces, side, bestmove in [({"a1": "K", "h8": "k", "e2": "P"}, "w", "e2e3"),
+                                           ({"h1": "K", "a8": "k", "e7": "p"}, "b", "e7e5")]:
+                fen = fen_with_pieces(pieces, side).replace("0 1", f"{clock} 2147483647")
+                self.send("position fen " + fen + "\n")
+                self.expect_search(2, "cp", 100, bestmove)
+                self.expect_state(pieces, side=side, halfmove=clock, fullmove=2147483647)
+        for fen, score, bestmove in [
+                ("7k/8/8/8/8/2n5/8/KN6 w - - 99 1", 300, "b1c3"),
+                ("kn6/8/2N5/8/8/8/8/7K b - - 99 1", 300, "b8c6"),
+                ("7k/4P3/8/8/8/8/8/7K w - - 99 1", 900, "e7e8q"),
+                ("7k/8/8/8/8/8/4p3/7K b - - 99 1", 900, "e2e1q")]:
+            self.send("position fen " + fen + "\n")
+            self.expect_search(2, "cp", score, bestmove)
+        self.send("quit\n")
+        self.expect_exit()
+
+    def test_fifty_move_check_and_checkmate_priority(self):
+        for clock in [99, 100, 101, 2147483647]:
+            for board, side, bestmove in [("7k/8/5KQ1/8/8/8/8/8", "w", "g6g7"),
+                                          ("8/8/8/8/8/5kq1/8/7K", "b", "g3g2")]:
+                self.send(f"position fen {board} {side} - - {clock} 1\n")
+                self.expect_search(2, "mate", 1, bestmove)
+            self.send(f"position fen 7k/2p5/5K2/8/8/8/8/7R b - - {clock} 1\n")
+            self.expect_search(2, "cp", 0, "h8g8", nodes=4)
+            for board, kind in [("k7/1Q6/2K5/8/8/8/8/8", "mate"),
+                                ("k7/8/1QK5/8/8/8/8/8", "cp")]:
+                self.send(f"position fen {board} b - - {clock} 1\n")
+                self.expect_search(2, kind, 0, "0000", nodes=2)
+        self.send("quit\n")
+        self.expect_exit()
+
+    def test_go_validation_and_counter_preservation(self):
         self.send("position fen " + SAMPLE_FEN + "\n")
         for command in ["go", "go infinite", "go movetime 100", "go depth", "go depth 0",
                         "go depth 5", "go depth -1", "go depth 1x", "go depth 1 extra",
