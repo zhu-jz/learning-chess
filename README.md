@@ -1564,6 +1564,84 @@ lesson introduces the retry decision with a fixed margin and unchanged
 depth. Those reference rules, and exact reference search parity, remain
 later work. Earlier lesson transcripts retain their historical counts.
 
+## Lesson 26: pruning with mate-distance bounds
+
+Mate scores already include their distance from the root. Being checkmated
+at ply `p` scores `-MATE_SCORE + p`; delivering mate at ply `p` scores
+`MATE_SCORE - p`. A quicker win scores higher, and a later loss scores
+higher than an earlier loss. These conventions also give us limits on
+what a branch can possibly achieve.
+
+At a node `ply` moves from the root:
+
+| Limit | Score | Reason |
+| --- | --- | --- |
+| Lowest possible score | `-MATE_SCORE + ply` | Being checkmated here is the earliest possible loss. |
+| Highest possible score | `MATE_SCORE - ply - 1` | The earliest possible win is mating on our next move. |
+
+For example, at ply five these bounds are -99995 and 99994. Ordinary
+material scores are well inside that range. The lower bound is conservative:
+we retain it even after checking that this node is not already checkmate.
+
+In `negamax`, two local integers name these limits. We raise alpha to the
+lower limit when necessary and lower beta to the upper limit. If alpha is
+then at least beta, the window is closed: no further search can find an
+exact score inside it. We return alpha as a bound with an empty PV.
+This does not claim that the current position has a newly discovered mate.
+
+Consider a root that has already found mate in one, scoring 99999. A later
+move's scout asks its child to search from -100000 to -99999. That child
+is at ply one, where the lowest possible score is -99999. Raising alpha
+to that limit closes the window immediately. Negating the returned bound
+gives 99999 at the root, which cannot beat the existing move. Our strict
+score comparison keeps the earlier move and its complete mating line.
+
+The new block runs only below the root and only at positive normal-search
+depth. The root still chooses a move, and quiescence retains its existing
+behavior. This follows the reference's scope for mate-distance pruning.
+Terminal positions, rule draws, and the recursion cap are handled first,
+so an actual checkmate still takes precedence over a rule draw.
+
+We keep legal move generation in its existing place for readability.
+A pruned visit therefore still generates moves and counts as one node,
+but it searches no children. Its ply still contributes to selective depth.
+The caller removes the child from repetition history through the usual
+cleanup path. PVS and aspiration retries need no special cases: they
+already distinguish bounds from completed exact results.
+
+Here is a position with mate in one:
+
+```text
+position fen 7k/8/5KQ1/8/8/8/8/8 w - - 0 1
+go depth 4
+info depth 1 seldepth 2 score mate 1 nodes 31 pv g6g7
+info depth 2 seldepth 1 score mate 1 nodes 55 pv g6g7
+info depth 3 seldepth 1 score mate 1 nodes 79 pv g6g7
+info depth 4 seldepth 1 score mate 1 nodes 103 pv g6g7
+bestmove g6g7
+```
+
+Depth one still enters quiescence for every child, so its report is
+unchanged. At later depths, `g6g7` is searched first because it was the
+previous iteration's choice. Once that mate is confirmed, the other
+children close their windows without descending further. Selective depth
+falls to one. Lesson 25 used 1348 cumulative nodes at depth four; this
+lesson uses 103, with the same score, PV, and best move.
+
+The tests also retain longer mating lines. With White's king on f6, queen
+on e5, and Black's king on h8, White to move finds mate in two at depth
+three. With Black to move, depth four reports `mate -2`. Their
+published PVs are checked by playing every move through to checkmate.
+
+Focused C checks exercise both limits at several plies, including the
+last ply before the recursion cap. At a limit the search cuts off; moving
+the window one point inward still searches. Further checks cover empty
+PVs on cutoffs, root and quiescence exclusions, terminal results, draws,
+and the hard cap. All 40 comparison cases preserve lesson 25's scores,
+PVs, and final moves while allowing nodes and selective depth to change.
+Earlier transcripts retain their historical counts. Full reference search
+parity still requires the remaining search and evaluation mechanisms.
+
 ## Build and try it
 
 From the project root in PowerShell, using MSYS2 UCRT64 GCC:

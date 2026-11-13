@@ -992,6 +992,24 @@ static int negamax(const struct Position *position, int depth, int ply,
         return 1;
     }
 
+    if (depth > 0 && ply > 0) {
+        /* The worst possible mate is being mated here. The best is mating
+           on our next move. Both scores use distance from the root. */
+        int lowest_score = -MATE_SCORE + ply;
+        int highest_score = MATE_SCORE - ply - 1;
+        if (alpha < lowest_score)
+            alpha = lowest_score;
+        if (beta > highest_score)
+            beta = highest_score;
+        /* No score can improve the caller's choice inside this window.
+           Return a bound with an empty PV, not a newly discovered mate. */
+        if (alpha >= beta) {
+            result->score = alpha;
+            free(moves);
+            return 1;
+        }
+    }
+
     result->score = -INFINITE_SCORE;
     int in_check = is_in_check(position, position->side_to_move);
     if (depth == 0 && !in_check) {

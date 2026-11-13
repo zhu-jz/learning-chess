@@ -1184,8 +1184,8 @@ class UciTests(unittest.TestCase):
         self.expect("bestmove d1e1")
         self.send("position fen 7k/8/5K2/6Q1/8/8/8/8 b - - 0 1\ngo depth 3\n")
         self.expect("info depth 1 seldepth 1 score cp -900 nodes 2 pv h8h7", timeout=60)
-        self.expect("info depth 2 seldepth 3 score mate -1 nodes 62 pv h8h7 g5g7", timeout=60)
-        self.expect("info depth 3 seldepth 3 score mate -1 nodes 114 pv h8h7 g5g7", timeout=60)
+        self.expect("info depth 2 seldepth 3 score mate -1 nodes 54 pv h8h7 g5g7", timeout=60)
+        self.expect("info depth 3 seldepth 3 score mate -1 nodes 93 pv h8h7 g5g7", timeout=60)
         self.expect("bestmove h8h7")
         self.send("quit\n")
         self.expect_exit()
@@ -1398,6 +1398,39 @@ class UciTests(unittest.TestCase):
         # Black has only Kh7, after which Qg7 is mate: a negative mate score.
         self.send("position fen 7k/8/5K2/6Q1/8/8/8/8 b - - 0 1\n")
         self.expect_search(2, "mate", -1, "h8h7")
+        self.send("quit\n")
+        self.expect_exit()
+
+    def test_mate_distance_prunes_after_finding_mate_in_one(self):
+        self.send("position fen 7k/8/5KQ1/8/8/8/8/8 w - - 0 1\ngo depth 4\n")
+        for depth, seldepth, nodes in [(1, 2, 31), (2, 1, 55), (3, 1, 79), (4, 1, 103)]:
+            self.assertEqual(self.read_search_info(depth, seldepth), ("mate", 1, nodes, ["g6g7"]))
+        self.expect("bestmove g6g7")
+        # Only normal search prunes by mate distance; depth one still sends
+        # every child to quiescence, including when a fresh go follows.
+        self.send("go depth 1\n")
+        self.assertEqual(self.read_search_info(1, 2), ("mate", 1, 31, ["g6g7"]))
+        self.expect("bestmove g6g7")
+        self.expect_state({"f6": "K", "g6": "Q", "h8": "k"})
+        self.send("quit\n")
+        self.expect_exit()
+
+    def test_mate_distance_preserves_longer_mating_lines(self):
+        board = "7k/8/5K2/4Q3/8/8/8/8"
+        for side, score, nodes, pv in [
+                ("w", 2, 828, ["e5g3", "h8h7", "g3g7"]),
+                ("b", -2, 1225, ["h8h7", "e5g3", "h7h6", "g3h2"])]:
+            with self.subTest(side=side):
+                self.send(f"position fen {board} {side} - - 0 1\ngo depth 4\n")
+                reports = [self.read_search_info(depth) for depth in range(1, 5)]
+                self.assertEqual(reports[-1], ("mate", score, nodes, pv))
+                self.expect("bestmove " + pv[0])
+                # A bound alone has no mating line. The published exact PV
+                # must still be playable all the way to actual checkmate.
+                self.send(f"position fen {board} {side} - - 0 1 moves " + " ".join(pv) + "\nisready\n")
+                self.expect("readyok")
+                self.assertEqual(self.read_moves(), [])
+                self.expect_check("black", True)
         self.send("quit\n")
         self.expect_exit()
 

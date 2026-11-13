@@ -387,6 +387,75 @@ static void test_aspiration_windows(void)
     check_pv(position, result, 0);
 }
 
+static void test_mate_distance_pruning(void)
+{
+    struct Position position;
+    set_start_position(&position);
+    struct SearchStats stats;
+    struct SearchResult result;
+    int plies[] = { 1, 5, MAX_SEARCH_PLY - 1 };
+
+    for (int i = 0; i < 3; i++) {
+        int ply = plies[i];
+        int lowest = -MATE_SCORE + ply;
+        int highest = MATE_SCORE - ply - 1;
+        int windows[4][2] = {
+            { -INFINITE_SCORE, lowest },
+            { -INFINITE_SCORE, lowest + 1 },
+            { highest, INFINITE_SCORE },
+            { highest - 1, INFINITE_SCORE }
+        };
+        unsigned long long nodes[] = { 1, 2, 1, 21 };
+        int scores[] = { lowest, 0, highest, 0 };
+        for (int j = 0; j < 4; j++) {
+            stats.nodes = 0;
+            stats.selective_depth = 0;
+            result.pv_length = 9; /* A cutoff must discard an old line. */
+            int success = negamax(&position, 1, ply, windows[j][0], windows[j][1],
+                                  NULL, NULL, &stats, &result);
+            assert(success && result.score == scores[j] && stats.nodes == nodes[j]);
+            int searched_move = j == 1 || j == 3;
+            assert(result.pv_length == searched_move);
+            assert(stats.selective_depth == ply + searched_move);
+            check_pv(position, result, ply);
+        }
+    }
+
+    /* The root must still choose a move. Quiescence keeps its own search
+       even when a mate bound could close a normal-search window. */
+    stats.nodes = 0;
+    stats.selective_depth = 0;
+    int success = negamax(&position, 1, 0, MATE_SCORE - 1, INFINITE_SCORE,
+                          NULL, NULL, &stats, &result);
+    assert(success && result.score == 0 && stats.nodes == 21);
+    expect_move(result, "b1a3");
+    result = search_at_horizon(position, 5, MATE_SCORE - 6, INFINITE_SCORE, 0, &stats);
+    assert(stats.nodes == 1 && result.pv_length == 0);
+    result = search_at_horizon(position, 5, -INFINITE_SCORE, -MATE_SCORE + 5, 0, &stats);
+    assert(stats.nodes == 1 && result.pv_length == 0);
+
+    /* Actual terminal results, rule draws, and the hard cap take precedence
+       over a mate bound. Use a window that would otherwise close immediately. */
+    char *boards[] = { "k7/1Q6/2K5/8/8/8/8/8", "k7/8/1QK5/8/8/8/8/8",
+                       "7k/8/8/8/8/8/8/K2Q4" };
+    for (int i = 0; i < 3; i++) {
+        position = position_from_fen(boards[i], i == 2 ? "w" : "b", "-");
+        position.halfmove_clock = 100;
+        stats.nodes = 0;
+        stats.selective_depth = 0;
+        success = negamax(&position, 1, 5, MATE_SCORE - 6, INFINITE_SCORE,
+                          NULL, NULL, &stats, &result);
+        assert(success && result.score == (i == 0 ? -MATE_SCORE + 5 : 0));
+        assert(stats.nodes == 1 && result.pv_length == 0);
+    }
+    set_start_position(&position);
+    stats.nodes = 0;
+    stats.selective_depth = 0;
+    success = negamax(&position, 1, MAX_SEARCH_PLY, MATE_SCORE - MAX_SEARCH_PLY - 1,
+                      INFINITE_SCORE, NULL, NULL, &stats, &result);
+    assert(success && result.score == 0 && stats.nodes == 1 && result.pv_length == 0);
+}
+
 int main(void)
 {
     struct SearchStats stats = { 0, 0 };
@@ -572,6 +641,7 @@ int main(void)
     test_selective_depth();
     test_principal_variation_search();
     test_aspiration_windows();
+    test_mate_distance_pruning();
     puts("Search checks passed");
     return 0;
 }
