@@ -147,26 +147,36 @@ class UciTests(unittest.TestCase):
         self.send("eval\n")
         self.expect(f"info string eval material cp {score}")
 
+    def read_search_info(self, depth):
+        try:
+            line = self.output.get(timeout=60)
+        except Empty:
+            self.fail("Timed out waiting for search")
+        self.assertIsNotNone(line)
+        self.assertRegex(line, rf"^info depth {depth} score (cp|mate) -?[0-9]+ nodes [0-9]+"
+                              r"( pv( [a-h][1-8][a-h][1-8][nbrq]?)+)?$")
+        words = line.split()
+        pv = words[9:]
+        self.assertLessEqual(len(pv), 64)
+        return words[4], int(words[5]), int(words[7]), pv
+
     def expect_search(self, depth, kind, score, bestmove, nodes=None):
         self.send(f"go depth {depth}\n")
         previous_nodes = 0
         for current_depth in range(1, depth + 1):
-            try:
-                line = self.output.get(timeout=60)
-            except Empty:
-                self.fail("Timed out waiting for search")
-            self.assertIsNotNone(line)
-            self.assertRegex(line, rf"^info depth {current_depth} score (cp|mate) -?[0-9]+ nodes [0-9]+$")
-            current_nodes = int(line.split()[-1])
-            self.assertGreater(current_nodes, previous_nodes)
-            previous_nodes = current_nodes
-        self.assertRegex(line, rf"^info depth {depth} score {kind} {score} nodes [0-9]+$")
+            actual_kind, actual_score, actual_nodes, pv = self.read_search_info(current_depth)
+            self.assertGreater(actual_nodes, previous_nodes)
+            previous_nodes = actual_nodes
+            self.assertEqual(bool(pv), bestmove != "0000")
+        self.assertEqual((actual_kind, actual_score), (kind, score))
         if nodes is not None:
-            self.assertEqual(int(line.split()[-1]), nodes)
+            self.assertEqual(actual_nodes, nodes)
+        if pv:
+            self.assertEqual(pv[0], bestmove)
         self.expect("bestmove " + bestmove)
         self.send("isready\n")
         self.expect("readyok")
-        return int(line.split()[-1])
+        return actual_nodes
 
     def read_moves(self):
         self.send("moves\n")
@@ -1147,30 +1157,85 @@ class UciTests(unittest.TestCase):
 
     def test_iterative_deepening_reports_all_iterations(self):
         self.send("go depth 4\n")
+        line = ["b1a3", "a7a5", "a1b1", "a5a4"]
         for depth, nodes in [(1, 21), (2, 83), (3, 612), (4, 2506)]:
-            self.expect(f"info depth {depth} score cp 0 nodes {nodes}", timeout=60)
+            self.assertEqual(self.read_search_info(depth), ("cp", 0, nodes, line[:depth]))
         self.expect("bestmove b1a3")
         self.expect_position(START_POSITION)
         # A new go command starts counting from zero again.
         self.send("go depth 2\n")
-        self.expect("info depth 1 score cp 0 nodes 21", timeout=60)
-        self.expect("info depth 2 score cp 0 nodes 83", timeout=60)
+        self.expect("info depth 1 score cp 0 nodes 21 pv b1a3", timeout=60)
+        self.expect("info depth 2 score cp 0 nodes 83 pv b1a3 a7a5", timeout=60)
         self.expect("bestmove b1a3")
         self.send("quit\n")
         self.expect_exit()
 
     def test_iterative_deepening_uses_the_deepest_result(self):
         self.send("position fen 7k/8/4p3/3r4/8/8/8/K2Q4 w - - 0 1\ngo depth 3\n")
-        self.expect("info depth 1 score cp 300 nodes 37", timeout=60)
-        self.expect("info depth 2 score cp 300 nodes 212", timeout=60)
-        self.expect("info depth 3 score cp 400 nodes 1023", timeout=60)
+        self.expect("info depth 1 score cp 300 nodes 37 pv d1b1", timeout=60)
+        self.expect("info depth 2 score cp 300 nodes 212 pv d1b1 d5d2", timeout=60)
+        self.expect("info depth 3 score cp 400 nodes 1023 pv d1e1 d5d3 e1e6", timeout=60)
         # Depths one and two choose d1b1; depth three finds d1e1.
         self.expect("bestmove d1e1")
         self.send("position fen 7k/8/5K2/6Q1/8/8/8/8 b - - 0 1\ngo depth 3\n")
-        self.expect("info depth 1 score cp -900 nodes 2", timeout=60)
-        self.expect("info depth 2 score mate -1 nodes 35", timeout=60)
-        self.expect("info depth 3 score mate -1 nodes 87", timeout=60)
+        self.expect("info depth 1 score cp -900 nodes 2 pv h8h7", timeout=60)
+        self.expect("info depth 2 score mate -1 nodes 35 pv h8h7 g5g7", timeout=60)
+        self.expect("info depth 3 score mate -1 nodes 87 pv h8h7 g5g7", timeout=60)
         self.expect("bestmove h8h7")
+        self.send("quit\n")
+        self.expect_exit()
+
+    def test_principal_variations_can_be_played(self):
+        positions = [
+            "startpos",
+            "fen r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+            "fen 7k/8/8/3pP3/8/8/8/K7 w - d6 0 1",
+            "fen 7k/4P3/8/8/8/8/8/7K w - - 0 1",
+            "fen 7k/8/8/8/8/8/4p3/7K b - - 0 1",
+            "fen 8/k1P5/2K5/8/8/8/8/8 w - - 0 1",
+            "fen 8/8/8/8/8/5k2/4p3/r6K w - - 0 1",
+            "fen 7k/8/5KQ1/8/8/8/8/8 w - - 0 1",
+            "fen 7k/8/5K2/6Q1/8/8/8/8 b - - 0 1",
+            "fen k7/1Q6/2K5/8/8/8/8/8 b - - 0 1",
+            "fen k7/8/1QK5/8/8/8/8/8 b - - 0 1",
+        ]
+        for position in positions:
+            with self.subTest(position=position):
+                self.send("position " + position + "\ngo depth 3\n")
+                reports = [self.read_search_info(depth) for depth in range(1, 4)]
+                final_pv = reports[-1][3]
+                self.expect("bestmove " + (final_pv[0] if final_pv else "0000"))
+                root_side = "w" if position == "startpos" else position.split()[2]
+                for kind, score, nodes, pv in reports:
+                    command = "position " + position
+                    if pv:
+                        command += " moves " + " ".join(pv)
+                    self.send(command + "\nisready\n")
+                    # Illegal PV moves produce an error before readyok.
+                    self.expect("readyok")
+                    legal_moves = self.read_moves()
+                    if kind == "mate":
+                        self.assertEqual(legal_moves, [])
+                        side = root_side if len(pv) % 2 == 0 else ("b" if root_side == "w" else "w")
+                        self.expect_check("white" if side == "w" else "black", True)
+                        distance = (len(pv) + 1) // 2
+                        self.assertEqual(score, distance if len(pv) % 2 else -distance)
+                    elif legal_moves:
+                        self.expect_eval(score if len(pv) % 2 == 0 else -score)
+                    else:
+                        self.assertEqual(score, 0)
+        self.send("quit\n")
+        self.expect_exit()
+
+    def test_principal_variation_includes_quiescence(self):
+        self.send("position fen 8/8/8/8/8/5k2/4p3/r6K w - - 0 1\ngo depth 1\n")
+        kind, score, nodes, pv = self.read_search_info(1)
+        self.assertEqual((kind, score, pv), ("cp", -1400, ["h1h2", "e2e1q"]))
+        self.expect("bestmove h1h2")
+        # A new, shorter search must not print a suffix from the previous PV.
+        self.send("position startpos\ngo depth 1\n")
+        self.assertEqual(self.read_search_info(1), ("cp", 0, 21, ["b1a3"]))
+        self.expect("bestmove b1a3")
         self.send("quit\n")
         self.expect_exit()
 

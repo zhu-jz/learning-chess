@@ -49,8 +49,9 @@ enum { MAX_SEARCH_PLY = 64 };
 
 struct SearchResult {
     int score;
-    int has_move;
-    struct Move move;
+    int pv_length;
+    /* Principal variation: the chosen move followed by the best replies. */
+    struct Move pv[MAX_SEARCH_PLY];
 };
 
 static void set_start_position(struct Position *position)
@@ -835,7 +836,7 @@ static int negamax(const struct Position *position, int depth, int ply,
     if (*nodes == ULLONG_MAX)
         return 0;
     (*nodes)++;
-    result->has_move = 0;
+    result->pv_length = 0;
 
     struct Move *moves = malloc(MAX_MOVES * sizeof(struct Move));
     if (moves == NULL)
@@ -899,8 +900,12 @@ static int negamax(const struct Position *position, int depth, int ply,
         /* Strict comparison keeps the first searched move when scores tie. */
         if (score > result->score) {
             result->score = score;
-            result->move = moves[i];
-            result->has_move = 1;
+            result->pv[0] = moves[i];
+            /* A child is one ply nearer the recursion limit, so its line
+               always leaves room for this move at the front. */
+            for (int j = 0; j < reply.pv_length; j++)
+                result->pv[j + 1] = reply.pv[j];
+            result->pv_length = reply.pv_length + 1;
         }
         if (score > alpha)
             alpha = score;
@@ -913,8 +918,10 @@ static int negamax(const struct Position *position, int depth, int ply,
     return 1;
 }
 
-static void print_search_info(int depth, int score, unsigned long long nodes)
+static void print_search_info(int depth, const struct SearchResult *result,
+                              unsigned long long nodes)
 {
+    int score = result->score;
     printf("info depth %d score ", depth);
     if (abs(score) >= MATE_SCORE - MAX_SEARCH_PLY) {
         int plies = MATE_SCORE - abs(score);
@@ -925,7 +932,16 @@ static void print_search_info(int depth, int score, unsigned long long nodes)
     } else {
         printf("cp %d", score);
     }
-    printf(" nodes %llu\n", nodes);
+    printf(" nodes %llu", nodes);
+    if (result->pv_length > 0) {
+        printf(" pv");
+        for (int i = 0; i < result->pv_length; i++) {
+            char text[6];
+            move_to_string(result->pv[i], text);
+            printf(" %s", text);
+        }
+    }
+    printf("\n");
     /* Let a GUI see this completed iteration while the next one runs. */
     fflush(stdout);
 }
@@ -965,11 +981,11 @@ static void read_go_command(const struct Position *position)
         }
         /* A failed iteration must not replace the last completed result. */
         result = iteration;
-        print_search_info(current_depth, result.score, nodes);
+        print_search_info(current_depth, &result, nodes);
     }
-    if (result.has_move) {
+    if (result.pv_length > 0) {
         char text[6];
-        move_to_string(result.move, text);
+        move_to_string(result.pv[0], text);
         printf("bestmove %s\n", text);
     } else {
         puts("bestmove 0000");

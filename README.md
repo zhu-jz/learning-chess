@@ -715,8 +715,10 @@ for a winning mate, negative for a losing mate. A root that is already
 checkmated reports `mate 0`. Both a checkmated root and a stalemated root return
 `bestmove 0000`, because no legal move exists.
 
-`SearchResult` holds the score, chosen move, and a flag saying whether a move
-was selected. Terminal positions and depth-zero leaves have no selected move.
+In lesson 14, `SearchResult` holds the score, chosen move, and a flag saying
+whether a move was selected. Lesson 19 replaces that move and flag with a
+move sequence and its length. Terminal positions and the original depth-zero
+leaves have no selected move.
 The function returns success separately so allocation or counter failures are
 not mistaken for chess scores. Lists are allocated and freed as in perft.
 
@@ -970,7 +972,8 @@ distance beyond normal depth, and terminal detection at the cap.
 score and the total nodes visited so far. It sends one `bestmove` after the
 last iteration.
 
-For example, `position startpos` followed by `go depth 3` produces:
+For example, in lesson 18, `position startpos` followed by `go depth 3` produced
+the following output. Lesson 19 appends a move sequence to each search report.
 
 ```text
 info depth 1 score cp 0 nodes 21
@@ -1030,6 +1033,77 @@ reports and a completed result to retain when interruption is added later.
 Tests check the complete report sequence, cumulative counts, resets between
 commands, changing scores and moves, and a single final `bestmove`. The
 individual iteration results were also compared with the lesson 17 engine.
+Exact Minifish parity remains a later target.
+
+## Lesson 19: reporting the principal variation
+
+A score tells us how the engine rates a position. The *principal variation*,
+usually shortened to *PV*, shows the sequence of moves the search chose to
+support that score. Each completed iteration now appends a `pv` field:
+
+```text
+position startpos
+go depth 3
+info depth 1 score cp 0 nodes 21 pv b1a3
+info depth 2 score cp 0 nodes 83 pv b1a3 a7a5
+info depth 3 score cp 0 nodes 612 pv b1a3 a7a5 a1b1
+bestmove b1a3
+```
+
+Each sequence starts at the root position for that `go` command. The first
+move belongs to the side to move; the remaining moves alternate sides.
+Coordinates use the same format as `position ... moves`, including a final
+promotion letter when needed. Castling uses the king's starting and ending
+squares, and en passant uses the capturing pawn's squares.
+
+`SearchResult` now contains `score`, `pv_length`, and `pv`, an ordinary array
+of moves. A nonempty array already supplies the chosen move in `pv[0]`, so
+we replace the old single-move field and flag rather than maintain duplicate
+state. A zero length means there is no continuation selected at that node.
+
+At entry, `negamax` sets the result's length to zero. Whenever a move improves
+the best score, the function places that move in slot zero and copies the
+child's sequence into the following slots. The new length is the child's
+length plus one. For example, if we choose `b1a3` and the child returns
+`a7a5 a1b1`, our result becomes `b1a3 a7a5 a1b1`. A tied score keeps the
+previous sequence, just as it previously kept the first chosen move.
+
+The array holds `MAX_SEARCH_PLY` moves. At a node at distance `ply`, at most
+`MAX_SEARCH_PLY - ply` moves remain before the recursion limit. The child is
+one ply closer to that limit, so prepending our move always fits. Terminal
+nodes and nodes at the limit return an empty sequence. Stand pat also leaves
+an empty sequence unless a searched move improves its score. Only entries
+below `pv_length` are read; stale array contents beyond that length are ignored.
+
+PV collection does not change which moves are searched, how they are ordered,
+or when alpha-beta cuts off. Scores, node counts, and final best moves are
+unchanged from lesson 18. Copying these short arrays adds some work, but makes
+the connection between a parent result and a child result explicit.
+
+The displayed line can be longer than the requested normal depth because
+it includes quiescence continuations. For example, depth one in
+`8/8/8/8/8/5k2/4p3/r6K w - - 0 1` reports `pv h1h2 e2e1q`: the king escape
+is the normal search move, and the promotion is found by quiescence. A line
+can also be shorter when it reaches a terminal position. The losing-mate
+fixture at depth three reports `pv h8h7 g5g7`, ending at checkmate after two
+plies. Quiescence stand pat and the recursion fallback remain approximations;
+printing a line does not remove those limits on the score.
+
+`print_search_info` prints the saved sequence before flushing the completed
+iteration's report. A terminal root omits the `pv` field and ends with
+`bestmove 0000`. Otherwise, the final `bestmove` is the first move of the last
+completed iteration's PV. Each new iteration builds its own sequence, and a
+failed iteration cannot replace the previously completed result.
+
+Tests replay reported sequences through the legal move parser, check their
+ending material scores or mate distances, and ensure the final move agrees
+with the PV. They cover promotions, underpromotion, en passant, lines extended
+by quiescence, terminal roots, and replacing a long line with a shorter one.
+The C checks also verify lengths near the recursion limit. Comparisons with
+lesson 18 confirm unchanged scores, node counts, and best moves.
+
+PV reporting is another step toward the reference protocol. We do not yet
+use the saved PV to order a later iteration's moves or report a ponder move.
 Exact Minifish parity remains a later target.
 
 ## Build and try it
