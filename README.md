@@ -938,8 +938,9 @@ stand-pat cutoff. Search starts with `-INFINITE_SCORE` and considers **every**
 legal evasion, including king moves and quiet blocks. Captures or promotions
 that give check can therefore lead to a longer sequence of replies.
 
-`MAX_SEARCH_PLY` limits the total distance from the root to 64 plies. Until
-we handle repetition, checking sequences need this hard recursion bound.
+`MAX_SEARCH_PLY` limits the total distance from the root to 64 plies.
+Lesson 22 also stops repetition cycles, but long sequences that do not repeat
+still need this hard recursion bound.
 At the limit, checkmate and stalemate still get their proper scores. Other
 positions return material, including positions in check. That emergency
 fallback can stop an unresolved exchange; it is a deliberate limitation of
@@ -1240,7 +1241,96 @@ clock to isolate that behavior.
 We use a fixed draw score of zero for clarity. Minifish's main search uses
 a small node-dependent adjustment to its draw score; its quiescence uses
 zero. Matching that distinction belongs to the later search-parity work.
-Repetition detection and other draw conditions also remain later lessons.
+Lesson 22 adds repetition detection. Other draw conditions remain later work.
+
+## Lesson 22: detecting repetitions by comparing positions
+
+The engine now remembers positions supplied through `position ... moves`
+and positions visited on the active search branch. A repetition can end a
+branch with a zero score and an empty continuation, just like the fifty-move
+draw. Checkmate and stalemate are still handled first, and the root continues
+searching for a legal move.
+
+`same_repetition_position` compares the board one square at a time, the side
+to move, the four castling rights, and the relevant en passant target. The
+clocks are excluded: they can differ when the same position returns. Keeping
+castling rights matters because moving a king or rook away and back can
+restore the board without restoring the right to castle.
+
+For en passant we follow the reference's key construction. A target is ignored
+if no pawn of the side to move attacks it. If a pawn attacks it, the target
+matters even when that pawn is pinned and the capture would expose its king.
+This is a deliberate match to the snapshot's behavior, not a separate
+implementation of all rules for adjudicating repetition in a played game.
+The original FEN target remains available to board display and move generation;
+only the repetition comparison uses this interpretation.
+
+`PositionHistory` is an array of complete position snapshots, an active count,
+and a `can_repeat` flag for each entry. There is no hash table or incremental
+key calculation. Recording a game position simply copies the structure.
+After a pawn move or capture, older positions are discarded because the
+position cannot return to them. Otherwise, only the latest 100 game positions
+are retained, shifting the array when it fills. This covers the reference's
+99-ply history window; beyond that, the fifty-move rule already handles a
+non-root node unless a move resets the counter.
+
+The reference has an important distinction between history and search:
+
+- A game position, including the root, is eligible as an earlier match only
+  if it already occurred before. A subsequent visit then completes a third
+  occurrence. `prepare_repetition_history` sets the flags explicitly instead
+  of clearing position keys as the reference does.
+- A position first reached below the root is immediately eligible as an
+  earlier match. Returning to it ends a search cycle without waiting for a
+  third occurrence. A unique root does not get this immediate eligibility.
+
+The reference expresses this policy through `prepare_root_history` in
+`position.py`, root-key handling in `search.py`, and `is_draw` in `movegen.py`.
+Our comparisons start four plies back, then step back by two. Four plies is
+the shortest return in ordinary legal play, and stepping by two keeps the
+same side to move. The current halfmove clock limits the scan so a search
+branch never compares against positions before its last pawn move or capture.
+
+For example:
+
+```text
+position fen 4r2k/8/8/8/8/8/8/KN6 w - - 0 1 moves b1a3 h8g8 a3b1 g8h8 b1a3 h8g8 a3b1 g8h8
+go depth 1
+info depth 1 score cp 0 nodes 6 pv b1a3
+bestmove b1a3
+```
+
+White's knight is worth 200 less than Black's rook under our teaching values.
+With no preceding moves, or only one copy of that four-ply cycle, depth one
+reports -200 and chooses `a1a2`. After two cycles, `b1a3` reaches a position
+that already appeared twice, giving White a draw. Loading only the final FEN,
+even with the same clocks, loses that earlier history and again scores -200.
+A FEN contains a position and counters; it cannot reconstruct past boards.
+
+Input remains atomic. `read_position_command` builds both the new position
+and its history in temporary structures. If any FEN field or listed move is
+invalid, neither replaces the current state. A successful new `position`
+command starts fresh history from its own initial position.
+
+Each `go` copies the game history and prepares its eligibility flags. Before
+searching a child, `negamax` appends the child's position and increments the
+count. After the call, it decrements the count before handling failure,
+cutoff, or the next sibling. Entries beyond the active count are ignored, so
+one branch cannot create a repetition in another. There are 64 extra slots
+for search, matching the recursion limit. Iterations reuse the restored game
+prefix, and the user's history is never changed by search.
+
+A repetition PV can end with legal moves still available and unequal
+material. `eval` still reports material; perft still counts legal move
+sequences without draw adjudication. The history policy is for search, and
+does not add a UCI draw-claim command. Other reference mechanisms, such as
+detecting an upcoming game cycle before making its move, remain later work.
+
+Tests cover game-history eligibility, cycles inside search, position identity,
+pinned en passant targets, the last history slots, long move lists, resets,
+failed-command rollback, repeated searches, and cleanup after a child fails.
+The earlier search and perft regressions continue to pass. Draws retain the
+teaching score of zero; exact reference search parity is still a later target.
 
 ## Build and try it
 

@@ -44,8 +44,17 @@ enum { MAX_MOVES = 64 * 64 * 4 };
 /* Even 64 queens score only 57600 with our teaching material values. */
 enum { MATE_SCORE = 100000, INFINITE_SCORE = 100001, MAX_SEARCH_DEPTH = 4 };
 /* Quiescence can follow checks beyond the requested depth. Bound recursion
-   until repetition handling can also stop repeated positions. */
+   even when a long sequence does not repeat a position. */
 enum { MAX_SEARCH_PLY = 64 };
+
+/* 100 game positions cover the reversible history before a fifty-move draw.
+   Search appends at most MAX_SEARCH_PLY more positions to this same array. */
+enum { GAME_HISTORY_SIZE = 100 };
+struct PositionHistory {
+    int count;
+    struct Position positions[GAME_HISTORY_SIZE + MAX_SEARCH_PLY];
+    int can_repeat[GAME_HISTORY_SIZE + MAX_SEARCH_PLY]; /* Eligible earlier matches. */
+};
 
 struct SearchResult {
     int score;
@@ -53,6 +62,22 @@ struct SearchResult {
     /* Principal variation: the chosen move followed by the best replies. */
     struct Move pv[MAX_SEARCH_PLY];
 };
+
+static void remember_position(struct PositionHistory *history, const struct Position *position)
+{
+    /* No earlier position can recur after a pawn move or capture. */
+    if (position->halfmove_clock == 0)
+        history->count = 0;
+    if (history->count == GAME_HISTORY_SIZE) {
+        for (int i = 1; i < history->count; i++)
+            history->positions[i - 1] = history->positions[i];
+        history->count--;
+    }
+    history->positions[history->count] = *position;
+    /* Search prepares these flags anew; game input only records positions. */
+    history->can_repeat[history->count] = 0;
+    history->count++;
+}
 
 static void set_start_position(struct Position *position)
 {
@@ -191,9 +216,11 @@ static int read_fen(struct Position *position, char *fields[6])
 static int play_uci_move(struct Position *position, const char *text);
 
 /* Continue tokenizing the line after the main loop has read "position". */
-static void read_position_command(struct Position *position)
+static void read_position_command(struct Position *position, struct PositionHistory *history)
 {
     struct Position next;
+    struct PositionHistory next_history;
+    next_history.count = 0;
     char *kind = strtok(NULL, " \t\r");
 
     if (kind == NULL) {
@@ -220,6 +247,7 @@ static void read_position_command(struct Position *position)
         return;
     }
 
+    remember_position(&next_history, &next);
     char *extra = strtok(NULL, " \t\r");
     if (extra != NULL) {
         if (strcmp(extra, "moves") != 0) {
@@ -232,11 +260,13 @@ static void read_position_command(struct Position *position)
                 printf("info string Cannot play move %s\n", text);
                 return;
             }
+            remember_position(&next_history, &next);
         }
     }
 
-    /* Replace the old position only after the entire command succeeds. */
+    /* Replace both position and history only after the whole command succeeds. */
     *position = next;
+    *history = next_history;
 }
 
 /* Empty squares have no color. */
@@ -797,6 +827,67 @@ static void read_perft_command(const struct Position *position)
     printf("info string perft depth %d nodes %llu\n", depth, nodes);
 }
 
+/* Match the reference's en passant key: an attacking pawn is enough,
+   including a pinned pawn. A target with no attacking pawn is ignored. */
+static int repetition_ep_square(const struct Position *position)
+{
+    if (position->en_passant_square == -1)
+        return -1;
+    int pawn = position->side_to_move == WHITE ? WHITE_PAWN : BLACK_PAWN;
+    for (int square = 0; square < 64; square++) {
+        if (position->board[square] == pawn
+            && piece_attacks_square(position, square, position->en_passant_square))
+            return position->en_passant_square;
+    }
+    return -1;
+}
+
+static int same_repetition_position(const struct Position *a, const struct Position *b)
+{
+    if (a->side_to_move != b->side_to_move)
+        return 0;
+    for (int square = 0; square < 64; square++) {
+        if (a->board[square] != b->board[square])
+            return 0;
+    }
+    for (int right = 0; right < 4; right++) {
+        if (a->castling[right] != b->castling[right])
+            return 0;
+    }
+    /* Clocks do not change the position's repetition identity. */
+    return repetition_ep_square(a) == repetition_ep_square(b);
+}
+
+static void prepare_repetition_history(struct PositionHistory *history)
+{
+    /* A game position, including the root, becomes eligible only if it
+       already occurred earlier. This follows the reference's root setup. */
+    for (int i = 0; i < history->count; i++) {
+        history->can_repeat[i] = 0;
+        for (int j = i - 4; j >= 0; j -= 2) {
+            if (same_repetition_position(&history->positions[i], &history->positions[j])) {
+                history->can_repeat[i] = 1;
+                break;
+            }
+        }
+    }
+}
+
+static int is_repetition(const struct Position *position, const struct PositionHistory *history)
+{
+    if (history == NULL)
+        return 0;
+    int current = history->count - 1;
+    /* Four plies is the shortest return; step by two to keep the same side.
+       Never look past a pawn move or capture on the current search branch. */
+    for (int i = current - 4; i >= 0 && current - i <= position->halfmove_clock; i -= 2) {
+        if (history->can_repeat[i]
+            && same_repetition_position(position, &history->positions[i]))
+            return 1;
+    }
+    return 0;
+}
+
 /* Immediate material gain is a guess about which moves to search first.
    It does not account for recaptures and never replaces the search score. */
 static int move_priority(const struct Position *position, struct Move move)
@@ -850,6 +941,7 @@ static void search_move_first(struct Move moves[], int count, const struct Move 
 static int negamax(const struct Position *position, int depth, int ply,
                    int alpha, int beta,
                    const struct Move *preferred,
+                   struct PositionHistory *history,
                    unsigned long long *nodes, struct SearchResult *result)
 {
     if (*nodes == ULLONG_MAX)
@@ -876,9 +968,9 @@ static int negamax(const struct Position *position, int depth, int ply,
         return 1;
     }
     /* Fifty moves by each side means 100 plies without a pawn move or
-       capture. Checkmate above takes precedence. Like the reference, keep
-       searching at the root so the UCI command can still choose a move. */
-    if (ply > 0 && position->halfmove_clock >= 100) {
+       capture. Repetition can also draw a branch. Checkmate above takes
+       precedence; like the reference, the root still searches for a move. */
+    if (ply > 0 && (position->halfmove_clock >= 100 || is_repetition(position, history))) {
         result->score = 0;
         free(moves);
         return 1;
@@ -918,9 +1010,23 @@ static int negamax(const struct Position *position, int depth, int ply,
         int child_depth = depth;
         if (child_depth > 0)
             child_depth--;
+        if (!apply_move(&child, moves[i])) {
+            free(moves);
+            return 0;
+        }
+        if (history != NULL) {
+            history->positions[history->count] = child;
+            /* Positions reached inside search may end a cycle on return. */
+            history->can_repeat[history->count] = 1;
+            history->count++;
+        }
         /* Changing sides negates scores and reverses the window's ends. */
-        if (!apply_move(&child, moves[i])
-            || !negamax(&child, child_depth, ply + 1, -beta, -alpha, NULL, nodes, &reply)) {
+        int success = negamax(&child, child_depth, ply + 1, -beta, -alpha,
+                              NULL, history, nodes, &reply);
+        /* Pop even on failure, before a cutoff or the next sibling move. */
+        if (history != NULL)
+            history->count--;
+        if (!success) {
             free(moves);
             return 0;
         }
@@ -974,7 +1080,7 @@ static void print_search_info(int depth, const struct SearchResult *result,
     fflush(stdout);
 }
 
-static void read_go_command(const struct Position *position)
+static void read_go_command(const struct Position *position, const struct PositionHistory *history)
 {
     char *limit = strtok(NULL, " \t\r");
     char *text = strtok(NULL, " \t\r");
@@ -997,6 +1103,8 @@ static void read_go_command(const struct Position *position)
     if (root.halfmove_clock > 100)
         root.halfmove_clock = 100;
     root.fullmove_number = 1;
+    struct PositionHistory search_history = *history;
+    prepare_repetition_history(&search_history);
     /* Count all work for this go command, including the shallower searches. */
     unsigned long long nodes = 0;
     struct SearchResult result;
@@ -1008,7 +1116,7 @@ static void read_go_command(const struct Position *position)
             preferred = &result.pv[0];
         struct SearchResult iteration;
         if (!negamax(&root, current_depth, 0, -INFINITE_SCORE, INFINITE_SCORE,
-                     preferred, &nodes, &iteration)) {
+                     preferred, &search_history, &nodes, &iteration)) {
             puts("info string Cannot complete search");
             if (current_depth == 1)
                 return;
@@ -1161,10 +1269,13 @@ static int read_command(char *line, int capacity)
 int main(void)
 {
     struct Position position;
+    struct PositionHistory history;
     char line[4096];
     char *command;
 
     set_start_position(&position);
+    history.count = 0;
+    remember_position(&history, &position);
 
     while (read_command(line, sizeof(line))) {
         command = strtok(line, " \t\r");
@@ -1178,7 +1289,7 @@ int main(void)
         } else if (strcmp(command, "isready") == 0) {
             puts("readyok");
         } else if (strcmp(command, "position") == 0) {
-            read_position_command(&position);
+            read_position_command(&position, &history);
         } else if (strcmp(command, "d") == 0) {
             print_board(&position);
         } else if (strcmp(command, "attacked") == 0) {
@@ -1192,7 +1303,7 @@ int main(void)
         } else if (strcmp(command, "eval") == 0) {
             read_eval_command(&position);
         } else if (strcmp(command, "go") == 0) {
-            read_go_command(&position);
+            read_go_command(&position, &history);
         } else if (strcmp(command, "quit") == 0) {
             break;
         }

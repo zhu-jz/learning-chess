@@ -85,7 +85,7 @@ static struct SearchResult search_at_horizon(struct Position position, int ply,
 {
     struct SearchResult result;
     *nodes = 0;
-    int success = negamax(&position, 0, ply, alpha, beta, NULL, nodes, &result);
+    int success = negamax(&position, 0, ply, alpha, beta, NULL, NULL, nodes, &result);
     assert(success);
     assert(result.score == expected_score);
     check_pv(position, result, ply);
@@ -98,6 +98,115 @@ static void expect_move(struct SearchResult result, const char *expected)
     assert(result.pv_length > 0);
     move_to_string(result.pv[0], text);
     assert(strcmp(text, expected) == 0);
+}
+
+static void test_repetition(void)
+{
+    struct Position a = position_from_fen("4r2k/8/8/8/8/8/8/KN6", "w", "-");
+    struct Position b = a;
+    b.halfmove_clock = 17;
+    b.fullmove_number = 42;
+    assert(same_repetition_position(&a, &b));
+    b.side_to_move = BLACK;
+    assert(!same_repetition_position(&a, &b));
+    b = a;
+    b.castling[WHITE_KINGSIDE] = 1;
+    assert(!same_repetition_position(&a, &b));
+    b = a;
+    b.board[1] = WHITE_BISHOP;
+    assert(!same_repetition_position(&a, &b));
+    b = a;
+    b.en_passant_square = 43; /* d6, with no attacking pawn */
+    assert(same_repetition_position(&a, &b));
+    a = position_from_fen("k3r3/8/8/3pP3/8/8/8/4K3", "w", "d6");
+    b = a;
+    b.en_passant_square = -1;
+    assert(!same_repetition_position(&a, &b));
+    /* The reference retains this EP key even though e5d6 exposes the king. */
+    assert(!play_uci_move(&b, "e5d6"));
+    b = a;
+    assert(!play_uci_move(&b, "e5d6"));
+    a = position_from_fen("7k/8/8/8/3Pp3/8/8/K7", "b", "d3");
+    b = a;
+    b.en_passant_square = -1;
+    assert(!same_repetition_position(&a, &b));
+
+    struct PositionHistory history;
+    history.count = 0;
+    a = position_from_fen("4r2k/8/8/8/8/8/8/KN6", "w", "-");
+    remember_position(&history, &a);
+    prepare_repetition_history(&history);
+    const char *cycle[4] = { "b1a3", "h8g8", "a3b1", "g8h8" };
+    int success;
+    /* Model the search path: a unique root is not yet eligible, but a
+       position first reached below it ends a cycle on its next visit. */
+    for (int i = 0; i < 5; i++) {
+        success = play_uci_move(&a, cycle[i % 4]);
+        assert(success);
+        history.positions[history.count] = a;
+        history.can_repeat[history.count] = 1;
+        history.count++;
+        assert(is_repetition(&a, &history) == (i == 4));
+    }
+    unsigned long long nodes = 0;
+    struct SearchResult result;
+    success = negamax(&a, 0, 5, -INFINITE_SCORE, INFINITE_SCORE,
+                      NULL, &history, &nodes, &result);
+    assert(success && result.score == 0 && result.pv_length == 0 && nodes == 1);
+    assert(history.count == 6);
+    a.halfmove_clock = 0;
+    assert(!is_repetition(&a, &history));
+
+    /* Game history requires an earlier occurrence before a row is eligible. */
+    history.count = 0;
+    a = position_from_fen("4r2k/8/8/8/8/8/8/KN6", "w", "-");
+    remember_position(&history, &a);
+    for (int i = 0; i < 8; i++) {
+        success = play_uci_move(&a, cycle[i % 4]);
+        assert(success);
+        remember_position(&history, &a);
+    }
+    prepare_repetition_history(&history);
+    for (int i = 0; i < history.count; i++)
+        assert(history.can_repeat[i] == (i >= 4));
+    nodes = 0;
+    success = negamax(&a, 1, 0, -INFINITE_SCORE, INFINITE_SCORE,
+                      NULL, &history, &nodes, &result);
+    assert(success && result.score == 0 && history.count == 9);
+    expect_move(result, "b1a3");
+    /* A failed child must also pop its history entry. */
+    nodes = ULLONG_MAX - 1;
+    success = negamax(&a, 1, 0, -INFINITE_SCORE, INFINITE_SCORE,
+                      NULL, &history, &nodes, &result);
+    assert(!success && history.count == 9);
+
+    /* Keep only the last 100 game positions, then reset on a capture. */
+    for (int i = 0; i < 112; i++) {
+        success = play_uci_move(&a, cycle[i % 4]);
+        assert(success);
+        remember_position(&history, &a);
+    }
+    assert(history.count == GAME_HISTORY_SIZE);
+    assert(history.positions[0].halfmove_clock == 21);
+    assert(history.positions[99].halfmove_clock == 120);
+    a = position_from_fen("7k/8/8/8/8/2n5/8/KN6", "w", "-");
+    success = play_uci_move(&a, "b1c3");
+    assert(success);
+    remember_position(&history, &a);
+    assert(history.count == 1 && history.positions[0].halfmove_clock == 0);
+
+    /* Exercise the last two search slots and restore the count after return. */
+    set_start_position(&a);
+    history.count = GAME_HISTORY_SIZE + MAX_SEARCH_PLY - 2;
+    for (int i = 0; i < history.count; i++) {
+        history.positions[i] = a;
+        history.can_repeat[i] = 0;
+    }
+    nodes = 0;
+    success = negamax(&a, 2, MAX_SEARCH_PLY - 2, -INFINITE_SCORE, INFINITE_SCORE,
+                      NULL, &history, &nodes, &result);
+    assert(success && result.pv_length == 2);
+    assert(history.count == GAME_HISTORY_SIZE + MAX_SEARCH_PLY - 2);
 }
 
 int main(void)
@@ -179,17 +288,17 @@ int main(void)
        the remaining plies fit, and reusing the result must discard old moves. */
     set_start_position(&position);
     nodes = 0;
-    int success = negamax(&position, 4, 0, -INFINITE_SCORE, INFINITE_SCORE, NULL, &nodes, &result);
+    int success = negamax(&position, 4, 0, -INFINITE_SCORE, INFINITE_SCORE, NULL, NULL, &nodes, &result);
     assert(success && result.pv_length == 4 && nodes == 1894);
     check_pv(position, result, 0);
     nodes = 0;
     success = negamax(&position, 4, MAX_SEARCH_PLY - 2,
-                      -INFINITE_SCORE, INFINITE_SCORE, NULL, &nodes, &result);
+                      -INFINITE_SCORE, INFINITE_SCORE, NULL, NULL, &nodes, &result);
     assert(success && result.pv_length == 2);
     check_pv(position, result, MAX_SEARCH_PLY - 2);
     nodes = 0;
     success = negamax(&position, 4, MAX_SEARCH_PLY,
-                      -INFINITE_SCORE, INFINITE_SCORE, NULL, &nodes, &result);
+                      -INFINITE_SCORE, INFINITE_SCORE, NULL, NULL, &nodes, &result);
     assert(success && result.pv_length == 0 && nodes == 1);
 
     position = position_from_fen("7k/P7/8/8/8/8/8/7K", "w", "-");
@@ -206,7 +315,7 @@ int main(void)
     struct Move preferred = { 12, 28, EMPTY, -1, -1, -1 }; /* e2e4 */
     nodes = 0;
     success = negamax(&position, 2, 0, -INFINITE_SCORE, INFINITE_SCORE,
-                      &preferred, &nodes, &result);
+                      &preferred, NULL, &nodes, &result);
     assert(success && result.score == 0 && result.pv_length == 2);
     expect_move(result, "e2e4");
     char reply[6];
@@ -215,7 +324,7 @@ int main(void)
     check_pv(position, result, 0);
     nodes = 0;
     success = negamax(&position, 2, 0, -INFINITE_SCORE, INFINITE_SCORE,
-                      NULL, &nodes, &result);
+                      NULL, NULL, &nodes, &result);
     assert(success && result.score == 0 && nodes == 62);
     expect_move(result, "b1a3");
 
@@ -270,11 +379,12 @@ int main(void)
     struct Move castle = { 4, 2, EMPTY, -1, 0, 3 }; /* e1c1, rook a1d1 */
     nodes = 0;
     success = negamax(&position, 2, 0, -INFINITE_SCORE, INFINITE_SCORE,
-                      &castle, &nodes, &result);
+                      &castle, NULL, &nodes, &result);
     assert(success && result.score == 0 && result.pv_length == 1);
     expect_move(result, "e1c1");
     check_pv(position, result, 0);
 
+    test_repetition();
     puts("Search checks passed");
     return 0;
 }

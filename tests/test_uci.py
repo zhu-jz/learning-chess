@@ -1431,6 +1431,55 @@ class UciTests(unittest.TestCase):
         self.send("quit\n")
         self.expect_exit()
 
+    def test_repetition_requires_repeated_game_history(self):
+        base = "position fen 4r2k/8/8/8/8/8/8/KN6 w - - 0 1"
+        cycle = "b1a3 h8g8 a3b1 g8h8"
+        for moves in ["", " moves " + cycle]:
+            self.send(base + moves + "\n")
+            self.expect_search(1, "cp", -200, "a1a2", nodes=6)
+        self.send(base + " moves " + cycle + " " + cycle + "\n")
+        for repeat in range(2):
+            self.expect_search(3, "cp", 0, "b1a3", nodes=56)
+            self.expect_state({"a1": "K", "b1": "N", "e8": "r", "h8": "k"},
+                              halfmove=8, fullmove=5)
+        # The same board and clocks in FEN do not supply the preceding moves.
+        self.send("position fen 4r2k/8/8/8/8/8/8/KN6 w - - 8 5\n")
+        self.expect_search(1, "cp", -200, "a1a2", nodes=6)
+        self.send("position startpos\n")
+        self.expect_search(2, "cp", 0, "b1a3", nodes=83)
+        self.send("quit\n")
+        self.expect_exit()
+
+    def test_invalid_position_preserves_repetition_history(self):
+        base = "position fen 4r2k/8/8/8/8/8/8/KN6 w - - 0 1"
+        cycle = "b1a3 h8g8 a3b1 g8h8"
+        self.send(base + " moves " + cycle + " " + cycle + "\n")
+        self.send(base + " moves b1a3 h8g8 a3b1 bad\n")
+        self.expect("info string Cannot play move bad")
+        self.expect_search(1, "cp", 0, "b1a3", nodes=6)
+        self.expect_state({"a1": "K", "b1": "N", "e8": "r", "h8": "k"},
+                          halfmove=8, fullmove=5)
+        self.send("quit\n")
+        self.expect_exit()
+
+    def test_long_game_history_and_zeroing_move(self):
+        cycle = "g1f3 g8f6 f3g1 f6g8"
+        self.send("position startpos moves " + " ".join([cycle] * 30) + "\n")
+        expected = START_POSITION.copy()
+        expected[12] = "Halfmove clock: 120"
+        expected[13] = "Fullmove number: 61"
+        self.expect_position(expected)
+        # Appending a pawn move clears the old reversible history, and the
+        # result agrees with loading that new position directly from FEN.
+        self.send("position startpos moves " + " ".join([cycle] * 30) + " e2e4\ngo depth 2\n")
+        reports = [self.read_search_info(depth) for depth in [1, 2]]
+        self.expect("bestmove " + reports[-1][3][0])
+        self.send("position fen rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 61\ngo depth 2\n")
+        self.assertEqual([self.read_search_info(depth) for depth in [1, 2]], reports)
+        self.expect("bestmove " + reports[-1][3][0])
+        self.send("quit\n")
+        self.expect_exit()
+
     def test_go_validation_and_counter_preservation(self):
         self.send("position fen " + SAMPLE_FEN + "\n")
         for command in ["go", "go infinite", "go movetime 100", "go depth", "go depth 0",
