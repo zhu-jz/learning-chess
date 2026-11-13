@@ -1480,6 +1480,90 @@ combines them with reductions, extensions, cached results, and other rules
 we have not introduced. This lesson teaches the PVS decision itself;
 exact reference node counts and reporting conventions remain later work.
 
+## Lesson 25: aspiration windows between iterations
+
+Iterative deepening gives us a score from the previous completed depth.
+Often the next depth will find a similar score. An aspiration window uses
+that estimate to start the root search with a smaller alpha-beta window,
+allowing some branches to cut off sooner.
+
+The first iteration still searches from `-INFINITE_SCORE` to
+`INFINITE_SCORE`. Later iterations start 50 centipawns below and above the
+previous score. Fifty centipawns is half a pawn under our teaching values.
+For a previous score of 300, the starting window is 250 to 350. We clamp
+the endpoints to the infinite limits, which matters near mate scores.
+
+The new `search_iteration` function owns this small retry loop:
+
+| Result from the attempt | Meaning | Next step |
+| --- | --- | --- |
+| At most alpha | Fail low: an upper bound | Set alpha to negative infinity and retry. |
+| At least beta | Fail high: a lower bound | Set beta to positive infinity and retry. |
+| Strictly between alpha and beta | Exact score | Complete the iteration. |
+
+Equality with an endpoint also requires a retry. A bound tells us which
+side of the window contains the score; it does not establish an exact
+score just because its number looks plausible. Only a result strictly
+inside the window is copied to the completed result.
+
+For this lesson, widening reopens the failed side all the way to infinity.
+The other endpoint stays where it was. Each failed attempt therefore opens
+a previously finite side. All our material and mate scores lie strictly
+between the two infinite limits, so there can be at most two retries.
+Every attempt searches the same requested depth. We do not reduce depth
+to compensate for the extra work.
+
+Each attempt uses the root move from the previous completed iteration.
+A provisional bound and its PV do not replace that hint. The recursive
+search restores repetition history before returning, so each retry begins
+with the same game history. If any attempt fails, `search_iteration`
+returns failure without changing its output. The existing `go` loop can
+then retain the last completed iteration and its best move.
+
+Nodes accumulate across all attempts and all completed depths in one
+`go` command. Selective depth resets once at the start of an iteration,
+then keeps the maximum over that iteration's attempts. The command prints
+one `info` line per completed depth; it does not report provisional bounds
+as exact scores. A new `go` starts with a full window and fresh counters.
+
+Here is a fail-low example:
+
+```text
+position fen 7k/8/8/8/8/8/8/K2Q4 w - - 98 1
+go depth 3
+info depth 1 seldepth 2 score cp 900 nodes 28 pv a1b1
+info depth 2 seldepth 2 score cp 0 nodes 124 pv a1b1 h8g7
+info depth 3 seldepth 2 score cp 0 nodes 173 pv a1b1 h8g7
+bestmove a1b1
+```
+
+At depth one, White retains a queen advantage. At depth two, every line
+reaches the fifty-move threshold, giving a draw. The first depth-two
+attempt uses 850 to 950 and fails low. Reopening alpha lets the retry
+establish zero as an exact result. Its report includes both attempts'
+nodes, and the stored position still has a halfmove clock of 98.
+
+The defended-rook position from lesson 24 illustrates fail high. Its
+score rises from 300 at depth two to 400 at depth three. The initial
+250-to-350 window fails high, so beta is reopened and the search repeats.
+The final PV remains `d1e1 d5d3 e1e6`, but the cumulative depth-three
+node count rises from 1099 to 1415. Aspiration windows can also save work:
+the castling fixture drops from 5809 to 5695 nodes at depth three. A good
+estimate helps; a poor estimate costs retries.
+
+Tests cover both failure directions, scores exactly on the window edges,
+mate scores near infinity, retained root preferences, cumulative nodes,
+and cleanup when either the first attempt or a retry fails. UCI checks
+verify the completed reports, unchanged game state, and fresh searches.
+Forty comparisons with lesson 24 preserve scores, PVs, and final best moves;
+node counts and selective depth are allowed to change.
+
+The reference uses a score-dependent margin, a running score estimate,
+gradual widening, and adjustments to search depth after failures. This
+lesson introduces the retry decision with a fixed margin and unchanged
+depth. Those reference rules, and exact reference search parity, remain
+later work. Earlier lesson transcripts retain their historical counts.
+
 ## Build and try it
 
 From the project root in PowerShell, using MSYS2 UCRT64 GCC:

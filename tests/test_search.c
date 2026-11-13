@@ -313,6 +313,80 @@ static void test_principal_variation_search(void)
     }
 }
 
+static void test_aspiration_windows(void)
+{
+    /* Every root move reaches the fifty-move threshold, making the true
+       score zero at any positive depth. Synthetic estimates test edges. */
+    struct Position position = position_from_fen("7k/8/8/8/8/8/8/K2Q4", "w", "-");
+    position.halfmove_clock = 99;
+    struct PositionHistory history;
+    history.count = 0;
+    remember_position(&history, &position);
+    prepare_repetition_history(&history);
+    struct SearchStats stats = { 7, MAX_SEARCH_PLY };
+    struct SearchResult result;
+    int success = search_iteration(&position, 1, NULL, &history, &stats, &result);
+    assert(success && result.score == 0 && stats.nodes == 7 + 24);
+    assert(stats.selective_depth == 1 && history.count == 1);
+    expect_move(result, "a1b1");
+
+    struct SearchResult previous;
+    previous.pv_length = 1;
+    struct Move preferred = { 0, 9, EMPTY, -1, -1, -1 }; /* a1b2 */
+    previous.pv[0] = preferred;
+    int estimates[] = { 0, 50, -50, 900, -900, MATE_SCORE, -MATE_SCORE };
+    unsigned long long expected_nodes[] = { 24, 48, 26, 48, 26, 48, 26 };
+    for (int i = 0; i < 7; i++) {
+        previous.score = estimates[i];
+        stats.nodes = 7;
+        stats.selective_depth = MAX_SEARCH_PLY;
+        success = search_iteration(&position, 2, &previous, &history, &stats, &result);
+        assert(success && result.score == 0 && result.pv_length == 1);
+        assert(stats.nodes == 7 + expected_nodes[i] && stats.selective_depth == 1);
+        expect_move(result, "a1b2");
+        check_pv(position, result, 0);
+        assert(history.count == 1 && history.can_repeat[0] == 0);
+        assert(same_repetition_position(&position, &history.positions[0]));
+        assert(position.halfmove_clock == 99 && position.fullmove_number == 1);
+        assert(previous.score == estimates[i] && previous.pv_length == 1);
+        expect_same_move(previous.pv[0], preferred);
+    }
+
+    /* Exhaust the counter during either the first attempt or its retry.
+       A failed iteration must leave its output and the previous PV intact. */
+    for (int direction = 0; direction < 2; direction++) {
+        previous.score = direction == 0 ? -50 : 50;
+        int first_attempt_nodes = direction == 0 ? 2 : 24;
+        for (int allowed = first_attempt_nodes - 1; allowed <= first_attempt_nodes + 1; allowed++) {
+            result = previous;
+            stats.nodes = ULLONG_MAX - allowed;
+            stats.selective_depth = 0;
+            success = search_iteration(&position, 2, &previous, &history, &stats, &result);
+            assert(!success && stats.nodes == ULLONG_MAX && history.count == 1);
+            assert(result.score == previous.score && result.pv_length == 1);
+            expect_same_move(result.pv[0], preferred);
+            expect_same_move(previous.pv[0], preferred);
+        }
+    }
+
+    /* Mate scores near either infinity must still fit inside a valid
+       window, including a terminal root with no preferred move. */
+    position = position_from_fen("k7/1Q6/2K5/8/8/8/8/8", "b", "-");
+    previous.score = -MATE_SCORE;
+    previous.pv_length = 0;
+    stats.nodes = 0;
+    success = search_iteration(&position, 2, &previous, NULL, &stats, &result);
+    assert(success && result.score == -MATE_SCORE && result.pv_length == 0);
+    assert(stats.nodes == 1 && stats.selective_depth == 0);
+    position = position_from_fen("7k/8/5KQ1/8/8/8/8/8", "w", "-");
+    previous.score = MATE_SCORE - 1;
+    stats.nodes = 0;
+    success = search_iteration(&position, 2, &previous, NULL, &stats, &result);
+    assert(success && result.score == MATE_SCORE - 1);
+    expect_move(result, "g6g7");
+    check_pv(position, result, 0);
+}
+
 int main(void)
 {
     struct SearchStats stats = { 0, 0 };
@@ -497,6 +571,7 @@ int main(void)
     test_repetition();
     test_selective_depth();
     test_principal_variation_search();
+    test_aspiration_windows();
     puts("Search checks passed");
     return 0;
 }

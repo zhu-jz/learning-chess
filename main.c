@@ -1105,6 +1105,48 @@ static void print_search_info(int depth, const struct SearchResult *result,
     fflush(stdout);
 }
 
+/* Finish one depth, retrying if the previous score was a poor estimate.
+   Only a result strictly inside the window supplies an exact root score. */
+static int search_iteration(const struct Position *position, int depth,
+                            const struct SearchResult *previous,
+                            struct PositionHistory *history,
+                            struct SearchStats *stats, struct SearchResult *result)
+{
+    int alpha = -INFINITE_SCORE;
+    int beta = INFINITE_SCORE;
+    const struct Move *preferred = NULL;
+    if (previous != NULL) {
+        /* Fifty centipawns is half a pawn in our material evaluation. */
+        alpha = previous->score - 50;
+        beta = previous->score + 50;
+        if (alpha < -INFINITE_SCORE)
+            alpha = -INFINITE_SCORE;
+        if (beta > INFINITE_SCORE)
+            beta = INFINITE_SCORE;
+        if (previous->pv_length > 0)
+            preferred = &previous->pv[0];
+    }
+
+    /* Nodes include earlier depths; selective depth includes all retries
+       at this depth. Neither counter is reset inside the retry loop. */
+    stats->selective_depth = 0;
+    for (;;) {
+        struct SearchResult attempt;
+        if (!negamax(position, depth, 0, alpha, beta, preferred, history, stats, &attempt))
+            return 0;
+        if (attempt.score <= alpha) {
+            /* Fail low: the score is only an upper bound. Reopen this side. */
+            alpha = -INFINITE_SCORE;
+        } else if (attempt.score >= beta) {
+            /* Fail high: the score is only a lower bound. */
+            beta = INFINITE_SCORE;
+        } else {
+            *result = attempt;
+            return 1;
+        }
+    }
+}
+
 static void read_go_command(const struct Position *position, const struct PositionHistory *history)
 {
     char *limit = strtok(NULL, " \t\r");
@@ -1135,15 +1177,13 @@ static void read_go_command(const struct Position *position, const struct Positi
     stats.nodes = 0;
     struct SearchResult result;
     for (int current_depth = 1; current_depth <= depth; current_depth++) {
-        stats.selective_depth = 0;
-        /* Only the root reuses a move, and only from a completed iteration
-           of this go command. Recursive calls pass NULL. */
-        const struct Move *preferred = NULL;
-        if (current_depth > 1 && result.pv_length > 0)
-            preferred = &result.pv[0];
+        /* Reuse only the last completed iteration of this go command. */
+        const struct SearchResult *previous = NULL;
+        if (current_depth > 1)
+            previous = &result;
         struct SearchResult iteration;
-        if (!negamax(&root, current_depth, 0, -INFINITE_SCORE, INFINITE_SCORE,
-                     preferred, &search_history, &stats, &iteration)) {
+        if (!search_iteration(&root, current_depth, previous,
+                              &search_history, &stats, &iteration)) {
             puts("info string Cannot complete search");
             if (current_depth == 1)
                 return;
