@@ -1026,8 +1026,8 @@ still 1 through 4.
 For now, all requested iterations run, even when a mate is found or the root
 has no legal moves. A terminal root visits one node per iteration and ends
 with `bestmove 0000`. This keeps the loop simple and its output predictable.
-We also do not yet use a previous iteration's best move to improve ordering,
-so the repeated searches add work. Iterative deepening provides progress
+Lesson 18 does not yet use a previous iteration's best move to improve ordering;
+lesson 20 adds that step at the root. Iterative deepening provides progress
 reports and a completed result to retain when interruption is added later.
 
 Tests check the complete report sequence, cumulative counts, resets between
@@ -1102,9 +1102,72 @@ by quiescence, terminal roots, and replacing a long line with a shorter one.
 The C checks also verify lengths near the recursion limit. Comparisons with
 lesson 18 confirm unchanged scores, node counts, and best moves.
 
-PV reporting is another step toward the reference protocol. We do not yet
-use the saved PV to order a later iteration's moves or report a ponder move.
+PV reporting is another step toward the reference protocol. Lesson 20 uses
+its first move to order the next iteration at the root. The remaining PV
+moves and ponder reporting are still later work.
 Exact Minifish parity remains a later target.
+
+## Lesson 20: trying the previous best root move first
+
+Iterative deepening now reuses one piece of information from its completed
+search: the best move at the root. Trying it first in the next iteration can
+establish a useful alpha bound sooner and let other branches cut off earlier.
+It is still searched normally at the new depth; its old score is not reused.
+
+Before each iteration, `read_go_command` sets a `preferred` move pointer to
+`NULL`. After the first iteration, if the completed result has a PV, the
+pointer refers to its first move. The next search writes into a separate
+result, so the previous result remains available until the iteration completes.
+Terminal roots have no PV and therefore no preference.
+
+`negamax` first applies our ordinary capture-and-promotion ordering. Then
+`search_move_first` looks for the preferred move in the generated legal list.
+It matches the starting square, destination, and promotion piece. Promotion
+matters because `a7a8n` and `a7a8q` are different moves. The generated move
+supplies all details needed to apply it, including the captured pawn's square
+for en passant and the rook's movement for castling. A missing match leaves
+the list unchanged.
+
+To put the matching move first, save it, shift all preceding moves one place
+to the right, and fill slot zero with the saved move. This preserves the
+relative order of every other move. Swapping the match with slot zero would
+move the displaced move behind intervening moves and alter their tie order.
+The helper searches a list at most once and shifts at most that many moves.
+
+Only the root receives a preference. Recursive calls pass `NULL`, so all
+replies keep the existing ordering. A new `go` command starts without a
+preference, even if the engine just searched the same position. There is no
+global move cache and no reuse of later moves from the old PV in this lesson.
+
+The defended-rook fixture from lesson 17 illustrates the effect:
+
+```text
+position fen 7k/8/4p3/3r4/8/8/8/K2Q4 w - - 0 1
+go depth 3
+info depth 1 score cp 300 nodes 37 pv d1b1
+info depth 2 score cp 300 nodes 208 pv d1b1 d5d2
+info depth 3 score cp 400 nodes 1005 pv d1e1 d5d3 e1e6
+bestmove d1e1
+```
+
+After depth one, the quiet move `d1b1` is searched before the tempting rook
+capture `d1d5`. Cumulative counts at depths two and three fall from 212 and
+1,023 to 208 and 1,005. Depth three still replaces the preferred move with
+`d1e1` when it finds a better score. Starting-position counts stay unchanged
+because its previous best move was already first.
+
+This changes ordering, not the set of moves or the search depth, so scores
+remain the same. Node counts and PVs can change, and the preferred move wins
+if it ties the best score. The C tests demonstrate this with a supplied
+`e2e4` preference in the starting position: it wins the zero-score root tie
+instead of `b1a3`. Normal starting-position searches still choose `b1a3`.
+As with capture ordering, improvement in node count is position-dependent.
+
+Tests cover stable ordering, absent preferences, promotion identity,
+castling and en passant details, and resetting the preference between
+commands. The existing PV replay checks still pass, and comparisons against
+lesson 19 preserve every iteration's score. Exact Minifish move ordering and
+node-count parity remain later work.
 
 ## Build and try it
 

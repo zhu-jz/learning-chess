@@ -14,6 +14,59 @@ static struct Position position_from_fen(char *pieces, char *side, char *en_pass
     return position;
 }
 
+static void expect_same_move(struct Move actual, struct Move expected)
+{
+    assert(actual.from == expected.from && actual.to == expected.to);
+    assert(actual.promotion == expected.promotion);
+    assert(actual.en_passant_capture_square == expected.en_passant_capture_square);
+    assert(actual.rook_from == expected.rook_from && actual.rook_to == expected.rook_to);
+}
+
+static void check_move_preference(struct Position position, const char *preferred_text)
+{
+    struct Move *moves = malloc(MAX_MOVES * sizeof(struct Move));
+    struct Move *original = malloc(MAX_MOVES * sizeof(struct Move));
+    assert(moves != NULL && original != NULL);
+    int count = generate_moves(&position, moves);
+    assert(count > 0);
+    order_moves(&position, moves, count);
+    int selected = -1;
+    for (int i = 0; i < count; i++) {
+        original[i] = moves[i];
+        char text[6];
+        move_to_string(moves[i], text);
+        if (strcmp(text, preferred_text) == 0)
+            selected = i;
+    }
+    assert(selected >= 0);
+    struct Move preferred = original[selected];
+    struct Move missing = preferred;
+    missing.from = -1;
+    search_move_first(moves, count, NULL);
+    search_move_first(moves, count, &missing);
+    for (int i = 0; i < count; i++)
+        expect_same_move(moves[i], original[i]);
+
+    /* A matching hint identifies the move; the legal list supplies its
+       en passant and castling details. Underpromotions must match exactly. */
+    preferred.en_passant_capture_square = -1;
+    preferred.rook_from = -1;
+    preferred.rook_to = -1;
+    for (int repeat = 0; repeat < 2; repeat++) {
+        search_move_first(moves, count, &preferred);
+        expect_same_move(moves[0], original[selected]);
+        int next = 1;
+        for (int i = 0; i < count; i++) {
+            if (i != selected) {
+                expect_same_move(moves[next], original[i]);
+                next++;
+            }
+        }
+    }
+    free(original);
+    free(moves);
+}
+
 static void check_pv(struct Position position, struct SearchResult result, int ply)
 {
     assert(result.pv_length >= 0);
@@ -32,7 +85,7 @@ static struct SearchResult search_at_horizon(struct Position position, int ply,
 {
     struct SearchResult result;
     *nodes = 0;
-    int success = negamax(&position, 0, ply, alpha, beta, nodes, &result);
+    int success = negamax(&position, 0, ply, alpha, beta, NULL, nodes, &result);
     assert(success);
     assert(result.score == expected_score);
     check_pv(position, result, ply);
@@ -126,18 +179,45 @@ int main(void)
        the remaining plies fit, and reusing the result must discard old moves. */
     set_start_position(&position);
     nodes = 0;
-    int success = negamax(&position, 4, 0, -INFINITE_SCORE, INFINITE_SCORE, &nodes, &result);
+    int success = negamax(&position, 4, 0, -INFINITE_SCORE, INFINITE_SCORE, NULL, &nodes, &result);
     assert(success && result.pv_length == 4 && nodes == 1894);
     check_pv(position, result, 0);
     nodes = 0;
     success = negamax(&position, 4, MAX_SEARCH_PLY - 2,
-                      -INFINITE_SCORE, INFINITE_SCORE, &nodes, &result);
+                      -INFINITE_SCORE, INFINITE_SCORE, NULL, &nodes, &result);
     assert(success && result.pv_length == 2);
     check_pv(position, result, MAX_SEARCH_PLY - 2);
     nodes = 0;
     success = negamax(&position, 4, MAX_SEARCH_PLY,
-                      -INFINITE_SCORE, INFINITE_SCORE, &nodes, &result);
+                      -INFINITE_SCORE, INFINITE_SCORE, NULL, &nodes, &result);
     assert(success && result.pv_length == 0 && nodes == 1);
+
+    position = position_from_fen("7k/P7/8/8/8/8/8/7K", "w", "-");
+    check_move_preference(position, "a7a8n");
+    position = position_from_fen("7k/8/8/3pP3/8/8/8/K7", "w", "d6");
+    check_move_preference(position, "e5d6");
+    position = position_from_fen("7k/8/8/8/8/8/8/R3K3", "w", "-");
+    position.castling[WHITE_QUEENSIDE] = 1;
+    check_move_preference(position, "e1c1");
+
+    /* A preferred quiet move wins a root tie. Black's reply still follows
+       ordinary generation order, and a later search with NULL starts fresh. */
+    set_start_position(&position);
+    struct Move preferred = { 12, 28, EMPTY, -1, -1, -1 }; /* e2e4 */
+    nodes = 0;
+    success = negamax(&position, 2, 0, -INFINITE_SCORE, INFINITE_SCORE,
+                      &preferred, &nodes, &result);
+    assert(success && result.score == 0 && result.pv_length == 2);
+    expect_move(result, "e2e4");
+    char reply[6];
+    move_to_string(result.pv[1], reply);
+    assert(strcmp(reply, "a7a5") == 0);
+    check_pv(position, result, 0);
+    nodes = 0;
+    success = negamax(&position, 2, 0, -INFINITE_SCORE, INFINITE_SCORE,
+                      NULL, &nodes, &result);
+    assert(success && result.score == 0 && nodes == 62);
+    expect_move(result, "b1a3");
 
     puts("Search checks passed");
     return 0;

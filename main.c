@@ -826,11 +826,30 @@ static void order_moves(const struct Position *position, struct Move moves[], in
     }
 }
 
+/* Move the previous iteration's choice to the front, keeping all other
+   moves in their existing order. Use the freshly generated legal move. */
+static void search_move_first(struct Move moves[], int count, const struct Move *preferred)
+{
+    if (preferred == NULL)
+        return;
+    for (int i = 0; i < count; i++) {
+        if (moves[i].from == preferred->from && moves[i].to == preferred->to
+            && moves[i].promotion == preferred->promotion) {
+            struct Move move = moves[i];
+            for (int j = i; j > 0; j--)
+                moves[j] = moves[j - 1];
+            moves[0] = move;
+            return;
+        }
+    }
+}
+
 /* Scores belong to the side to move. Alpha is the threshold to improve;
    beta is the threshold where the caller can reject this branch.
    At depth zero, the same recursion becomes a quiescence search. */
 static int negamax(const struct Position *position, int depth, int ply,
                    int alpha, int beta,
+                   const struct Move *preferred,
                    unsigned long long *nodes, struct SearchResult *result)
 {
     if (*nodes == ULLONG_MAX)
@@ -879,6 +898,7 @@ static int negamax(const struct Position *position, int depth, int ply,
     }
 
     order_moves(position, moves, count);
+    search_move_first(moves, count, preferred);
     for (int i = 0; i < count; i++) {
         /* In check we must search every evasion, including quiet moves.
            Otherwise quiescence searches only captures and promotions. */
@@ -892,7 +912,7 @@ static int negamax(const struct Position *position, int depth, int ply,
             child_depth--;
         /* Changing sides negates scores and reverses the window's ends. */
         if (!apply_move(&child, moves[i])
-            || !negamax(&child, child_depth, ply + 1, -beta, -alpha, nodes, &reply)) {
+            || !negamax(&child, child_depth, ply + 1, -beta, -alpha, NULL, nodes, &reply)) {
             free(moves);
             return 0;
         }
@@ -971,9 +991,14 @@ static void read_go_command(const struct Position *position)
     unsigned long long nodes = 0;
     struct SearchResult result;
     for (int current_depth = 1; current_depth <= depth; current_depth++) {
+        /* Only the root reuses a move, and only from a completed iteration
+           of this go command. Recursive calls pass NULL. */
+        const struct Move *preferred = NULL;
+        if (current_depth > 1 && result.pv_length > 0)
+            preferred = &result.pv[0];
         struct SearchResult iteration;
         if (!negamax(&root, current_depth, 0, -INFINITE_SCORE, INFINITE_SCORE,
-                     &nodes, &iteration)) {
+                     preferred, &nodes, &iteration)) {
             puts("info string Cannot complete search");
             if (current_depth == 1)
                 return;

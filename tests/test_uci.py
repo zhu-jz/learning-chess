@@ -1173,8 +1173,8 @@ class UciTests(unittest.TestCase):
     def test_iterative_deepening_uses_the_deepest_result(self):
         self.send("position fen 7k/8/4p3/3r4/8/8/8/K2Q4 w - - 0 1\ngo depth 3\n")
         self.expect("info depth 1 score cp 300 nodes 37 pv d1b1", timeout=60)
-        self.expect("info depth 2 score cp 300 nodes 212 pv d1b1 d5d2", timeout=60)
-        self.expect("info depth 3 score cp 400 nodes 1023 pv d1e1 d5d3 e1e6", timeout=60)
+        self.expect("info depth 2 score cp 300 nodes 208 pv d1b1 d5d2", timeout=60)
+        self.expect("info depth 3 score cp 400 nodes 1005 pv d1e1 d5d3 e1e6", timeout=60)
         # Depths one and two choose d1b1; depth three finds d1e1.
         self.expect("bestmove d1e1")
         self.send("position fen 7k/8/5K2/6Q1/8/8/8/8 b - - 0 1\ngo depth 3\n")
@@ -1182,6 +1182,18 @@ class UciTests(unittest.TestCase):
         self.expect("info depth 2 score mate -1 nodes 35 pv h8h7 g5g7", timeout=60)
         self.expect("info depth 3 score mate -1 nodes 87 pv h8h7 g5g7", timeout=60)
         self.expect("bestmove h8h7")
+        self.send("quit\n")
+        self.expect_exit()
+
+    def test_root_preference_resets_with_each_go(self):
+        self.send("position fen 7k/8/4p3/3r4/8/8/8/K2Q4 w - - 0 1\n")
+        self.expect_search(3, "cp", 400, "d1e1", nodes=1005)
+        # The previous go ended with d1e1, but depth one must start afresh.
+        self.expect_search(1, "cp", 300, "d1b1", nodes=37)
+        self.expect_search(3, "cp", 400, "d1e1", nodes=1005)
+        self.send("position startpos\n")
+        self.expect_search(1, "cp", 0, "b1a3", nodes=21)
+        self.expect_position(START_POSITION)
         self.send("quit\n")
         self.expect_exit()
 
