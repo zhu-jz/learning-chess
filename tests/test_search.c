@@ -81,13 +81,16 @@ static void check_pv(struct Position position, struct SearchResult result, int p
 
 static struct SearchResult search_at_horizon(struct Position position, int ply,
                                             int alpha, int beta, int expected_score,
-                                            unsigned long long *nodes)
+                                            struct SearchStats *stats)
 {
     struct SearchResult result;
-    *nodes = 0;
-    int success = negamax(&position, 0, ply, alpha, beta, NULL, NULL, nodes, &result);
+    stats->nodes = 0;
+    stats->selective_depth = 0;
+    int success = negamax(&position, 0, ply, alpha, beta, NULL, NULL, stats, &result);
     assert(success);
     assert(result.score == expected_score);
+    assert(stats->selective_depth >= ply + result.pv_length);
+    assert(stats->selective_depth <= MAX_SEARCH_PLY);
     check_pv(position, result, ply);
     return result;
 }
@@ -148,11 +151,12 @@ static void test_repetition(void)
         history.count++;
         assert(is_repetition(&a, &history) == (i == 4));
     }
-    unsigned long long nodes = 0;
+    struct SearchStats stats = { 0, 0 };
     struct SearchResult result;
     success = negamax(&a, 0, 5, -INFINITE_SCORE, INFINITE_SCORE,
-                      NULL, &history, &nodes, &result);
-    assert(success && result.score == 0 && result.pv_length == 0 && nodes == 1);
+                      NULL, &history, &stats, &result);
+    assert(success && result.score == 0 && result.pv_length == 0 && stats.nodes == 1);
+    assert(stats.selective_depth == 5);
     assert(history.count == 6);
     a.halfmove_clock = 0;
     assert(!is_repetition(&a, &history));
@@ -169,15 +173,16 @@ static void test_repetition(void)
     prepare_repetition_history(&history);
     for (int i = 0; i < history.count; i++)
         assert(history.can_repeat[i] == (i >= 4));
-    nodes = 0;
+    stats.nodes = 0;
+    stats.selective_depth = 0;
     success = negamax(&a, 1, 0, -INFINITE_SCORE, INFINITE_SCORE,
-                      NULL, &history, &nodes, &result);
+                      NULL, &history, &stats, &result);
     assert(success && result.score == 0 && history.count == 9);
     expect_move(result, "b1a3");
     /* A failed child must also pop its history entry. */
-    nodes = ULLONG_MAX - 1;
+    stats.nodes = ULLONG_MAX - 1;
     success = negamax(&a, 1, 0, -INFINITE_SCORE, INFINITE_SCORE,
-                      NULL, &history, &nodes, &result);
+                      NULL, &history, &stats, &result);
     assert(!success && history.count == 9);
 
     /* Keep only the last 100 game positions, then reset on a capture. */
@@ -202,104 +207,154 @@ static void test_repetition(void)
         history.positions[i] = a;
         history.can_repeat[i] = 0;
     }
-    nodes = 0;
+    stats.nodes = 0;
+    stats.selective_depth = 0;
     success = negamax(&a, 2, MAX_SEARCH_PLY - 2, -INFINITE_SCORE, INFINITE_SCORE,
-                      NULL, &history, &nodes, &result);
+                      NULL, &history, &stats, &result);
     assert(success && result.pv_length == 2);
     assert(history.count == GAME_HISTORY_SIZE + MAX_SEARCH_PLY - 2);
 }
 
+static void test_selective_depth(void)
+{
+    struct SearchStats stats = { 0, 0 };
+    struct SearchResult result;
+    struct Position position = position_from_fen("7k/8/4p3/3r4/8/8/8/K2Q4", "w", "-");
+
+    /* Stand pat wins, but the rejected capture line still contributes its
+       deepest node: Qxd5 exd5. The PV alone cannot tell us this depth. */
+    int success = negamax(&position, 0, 0, -INFINITE_SCORE, INFINITE_SCORE,
+                          NULL, NULL, &stats, &result);
+    assert(success && result.pv_length == 0 && stats.nodes == 3);
+    assert(stats.selective_depth == 2);
+
+    /* An iteration resets depth but keeps the accumulated node count.
+       Here the new search ends immediately at the stand-pat cutoff. */
+    stats.selective_depth = 0;
+    success = negamax(&position, 0, 0, 0, 200, NULL, NULL, &stats, &result);
+    assert(success && stats.nodes == 4 && stats.selective_depth == 0);
+
+    /* Starting near the cap exercises the final legal array boundary. */
+    position = position_from_fen("7k/2p5/5K2/8/8/8/8/7R", "b", "-");
+    result = search_at_horizon(position, MAX_SEARCH_PLY - 1,
+                               -INFINITE_SCORE, INFINITE_SCORE, -400, &stats);
+    assert(stats.nodes == 2 && stats.selective_depth == MAX_SEARCH_PLY);
+    result = search_at_horizon(position, MAX_SEARCH_PLY,
+                               -INFINITE_SCORE, INFINITE_SCORE, -400, &stats);
+    assert(stats.nodes == 1 && stats.selective_depth == MAX_SEARCH_PLY);
+
+    /* Terminal leaves and rule draws also count their arrival ply. */
+    position = position_from_fen("k7/1Q6/2K5/8/8/8/8/8", "b", "-");
+    result = search_at_horizon(position, 7, -INFINITE_SCORE, INFINITE_SCORE,
+                               -MATE_SCORE + 7, &stats);
+    assert(stats.nodes == 1 && stats.selective_depth == 7);
+    position = position_from_fen("7k/8/8/8/8/8/8/K2Q4", "w", "-");
+    position.halfmove_clock = 100;
+    result = search_at_horizon(position, 5, -INFINITE_SCORE, INFINITE_SCORE, 0, &stats);
+    assert(stats.nodes == 1 && stats.selective_depth == 5);
+
+    /* A node refused by the counter overflow guard was never visited. */
+    stats.nodes = ULLONG_MAX;
+    stats.selective_depth = 0;
+    success = negamax(&position, 0, 5, -INFINITE_SCORE, INFINITE_SCORE,
+                      NULL, NULL, &stats, &result);
+    assert(!success && stats.nodes == ULLONG_MAX && stats.selective_depth == 0);
+}
+
 int main(void)
 {
-    unsigned long long nodes;
+    struct SearchStats stats = { 0, 0 };
     struct Position position;
     struct SearchResult result;
 
     /* A quiet horizon counts once, with no extra negamax-to-quiescence node. */
     set_start_position(&position);
-    result = search_at_horizon(position, 0, -INFINITE_SCORE, INFINITE_SCORE, 0, &nodes);
-    assert(nodes == 1 && result.pv_length == 0);
+    result = search_at_horizon(position, 0, -INFINITE_SCORE, INFINITE_SCORE, 0, &stats);
+    assert(stats.nodes == 1 && result.pv_length == 0);
 
     /* Stand pat can reject a losing capture, and can also cut off directly. */
     position = position_from_fen("7k/8/4p3/3r4/8/8/8/K2Q4", "w", "-");
-    result = search_at_horizon(position, 0, -INFINITE_SCORE, INFINITE_SCORE, 300, &nodes);
-    assert(nodes == 3 && result.pv_length == 0);
-    result = search_at_horizon(position, 0, 0, 200, 300, &nodes);
-    assert(nodes == 1 && result.pv_length == 0);
+    result = search_at_horizon(position, 0, -INFINITE_SCORE, INFINITE_SCORE, 300, &stats);
+    assert(stats.nodes == 3 && result.pv_length == 0);
+    result = search_at_horizon(position, 0, 0, 200, 300, &stats);
+    assert(stats.nodes == 1 && result.pv_length == 0);
 
     /* After Qxd5, Black must see exd5 instead of accepting the lost rook. */
     position = position_from_fen("7k/8/4p3/3Q4/8/8/8/K7", "b", "-");
-    result = search_at_horizon(position, 0, -INFINITE_SCORE, INFINITE_SCORE, 100, &nodes);
+    result = search_at_horizon(position, 0, -INFINITE_SCORE, INFINITE_SCORE, 100, &stats);
     expect_move(result, "e6d5");
-    assert(nodes == 2);
+    assert(stats.nodes == 2);
 
     position = position_from_fen("7k/8/8/3pP3/8/8/8/K7", "w", "d6");
-    result = search_at_horizon(position, 0, -INFINITE_SCORE, INFINITE_SCORE, 100, &nodes);
+    result = search_at_horizon(position, 0, -INFINITE_SCORE, INFINITE_SCORE, 100, &stats);
     expect_move(result, "e5d6");
-    assert(nodes == 2);
+    assert(stats.nodes == 2);
 
     /* A non-capturing promotion belongs in quiescence, for either color. */
     position = position_from_fen("7k/4P3/8/8/8/8/8/7K", "w", "-");
-    result = search_at_horizon(position, 0, -INFINITE_SCORE, INFINITE_SCORE, 900, &nodes);
+    result = search_at_horizon(position, 0, -INFINITE_SCORE, INFINITE_SCORE, 900, &stats);
     expect_move(result, "e7e8q");
     position = position_from_fen("7k/8/8/8/8/8/4p3/7K", "b", "-");
-    result = search_at_horizon(position, 0, -INFINITE_SCORE, INFINITE_SCORE, 900, &nodes);
+    result = search_at_horizon(position, 0, -INFINITE_SCORE, INFINITE_SCORE, 900, &stats);
     expect_move(result, "e2e1q");
 
     /* Queening stalemates; retaining all promotion choices finds a rook. */
     position = position_from_fen("8/k1P5/2K5/8/8/8/8/8", "w", "-");
-    result = search_at_horizon(position, 0, -INFINITE_SCORE, INFINITE_SCORE, 500, &nodes);
+    result = search_at_horizon(position, 0, -INFINITE_SCORE, INFINITE_SCORE, 500, &stats);
     expect_move(result, "c7c8r");
 
     /* Only Kg8 evades check. Even a favorable stand-pat cutoff is forbidden. */
     position = position_from_fen("7k/2p5/5K2/8/8/8/8/7R", "b", "-");
-    result = search_at_horizon(position, 0, -600, -500, -400, &nodes);
+    result = search_at_horizon(position, 0, -600, -500, -400, &stats);
     expect_move(result, "h8g8");
-    assert(nodes == 2);
+    assert(stats.nodes == 2);
 
     /* The last available ply is searched; at the limit we approximate.
        This fallback does not claim that standing pat in check is legal. */
     result = search_at_horizon(position, MAX_SEARCH_PLY - 1,
-                               -INFINITE_SCORE, INFINITE_SCORE, -400, &nodes);
+                               -INFINITE_SCORE, INFINITE_SCORE, -400, &stats);
     expect_move(result, "h8g8");
-    assert(nodes == 2);
+    assert(stats.nodes == 2);
     result = search_at_horizon(position, MAX_SEARCH_PLY,
-                               -INFINITE_SCORE, INFINITE_SCORE, -400, &nodes);
-    assert(nodes == 1 && result.pv_length == 0);
+                               -INFINITE_SCORE, INFINITE_SCORE, -400, &stats);
+    assert(stats.nodes == 1 && result.pv_length == 0);
 
     /* Terminal detection must precede both stand pat and the recursion cap. */
     position = position_from_fen("k7/8/1QK5/8/8/8/8/8", "b", "-");
-    result = search_at_horizon(position, 0, -2000, -1000, 0, &nodes);
-    assert(nodes == 1 && result.pv_length == 0);
-    result = search_at_horizon(position, MAX_SEARCH_PLY, -2000, -1000, 0, &nodes);
-    assert(nodes == 1 && result.pv_length == 0);
+    result = search_at_horizon(position, 0, -2000, -1000, 0, &stats);
+    assert(stats.nodes == 1 && result.pv_length == 0);
+    result = search_at_horizon(position, MAX_SEARCH_PLY, -2000, -1000, 0, &stats);
+    assert(stats.nodes == 1 && result.pv_length == 0);
     position = position_from_fen("k7/1Q6/2K5/8/8/8/8/8", "b", "-");
     result = search_at_horizon(position, MAX_SEARCH_PLY, -INFINITE_SCORE, INFINITE_SCORE,
-                               -MATE_SCORE + MAX_SEARCH_PLY, &nodes);
-    assert(nodes == 1 && result.pv_length == 0);
+                               -MATE_SCORE + MAX_SEARCH_PLY, &stats);
+    assert(stats.nodes == 1 && result.pv_length == 0);
 
     /* Qxg7 mates during quiescence, beyond the normal maximum depth. */
     position = position_from_fen("7k/6r1/5KQ1/8/8/8/8/8", "w", "-");
     result = search_at_horizon(position, 4, -INFINITE_SCORE, INFINITE_SCORE,
-                               MATE_SCORE - 5, &nodes);
+                               MATE_SCORE - 5, &stats);
     expect_move(result, "g6g7");
 
     /* Ordinary search builds a full line. Near the recursion limit only
        the remaining plies fit, and reusing the result must discard old moves. */
     set_start_position(&position);
-    nodes = 0;
-    int success = negamax(&position, 4, 0, -INFINITE_SCORE, INFINITE_SCORE, NULL, NULL, &nodes, &result);
-    assert(success && result.pv_length == 4 && nodes == 1894);
+    stats.nodes = 0;
+    stats.selective_depth = 0;
+    int success = negamax(&position, 4, 0, -INFINITE_SCORE, INFINITE_SCORE, NULL, NULL, &stats, &result);
+    assert(success && result.pv_length == 4 && stats.nodes == 1894);
     check_pv(position, result, 0);
-    nodes = 0;
+    stats.nodes = 0;
+    stats.selective_depth = 0;
     success = negamax(&position, 4, MAX_SEARCH_PLY - 2,
-                      -INFINITE_SCORE, INFINITE_SCORE, NULL, NULL, &nodes, &result);
+                      -INFINITE_SCORE, INFINITE_SCORE, NULL, NULL, &stats, &result);
     assert(success && result.pv_length == 2);
     check_pv(position, result, MAX_SEARCH_PLY - 2);
-    nodes = 0;
+    stats.nodes = 0;
+    stats.selective_depth = 0;
     success = negamax(&position, 4, MAX_SEARCH_PLY,
-                      -INFINITE_SCORE, INFINITE_SCORE, NULL, NULL, &nodes, &result);
-    assert(success && result.pv_length == 0 && nodes == 1);
+                      -INFINITE_SCORE, INFINITE_SCORE, NULL, NULL, &stats, &result);
+    assert(success && result.pv_length == 0 && stats.nodes == 1);
 
     position = position_from_fen("7k/P7/8/8/8/8/8/7K", "w", "-");
     check_move_preference(position, "a7a8n");
@@ -313,19 +368,21 @@ int main(void)
        ordinary generation order, and a later search with NULL starts fresh. */
     set_start_position(&position);
     struct Move preferred = { 12, 28, EMPTY, -1, -1, -1 }; /* e2e4 */
-    nodes = 0;
+    stats.nodes = 0;
+    stats.selective_depth = 0;
     success = negamax(&position, 2, 0, -INFINITE_SCORE, INFINITE_SCORE,
-                      &preferred, NULL, &nodes, &result);
+                      &preferred, NULL, &stats, &result);
     assert(success && result.score == 0 && result.pv_length == 2);
     expect_move(result, "e2e4");
     char reply[6];
     move_to_string(result.pv[1], reply);
     assert(strcmp(reply, "a7a5") == 0);
     check_pv(position, result, 0);
-    nodes = 0;
+    stats.nodes = 0;
+    stats.selective_depth = 0;
     success = negamax(&position, 2, 0, -INFINITE_SCORE, INFINITE_SCORE,
-                      NULL, NULL, &nodes, &result);
-    assert(success && result.score == 0 && nodes == 62);
+                      NULL, NULL, &stats, &result);
+    assert(success && result.score == 0 && stats.nodes == 62);
     expect_move(result, "b1a3");
 
     /* Below the root, 100 halfmoves is a draw even when material is unequal.
@@ -335,40 +392,40 @@ int main(void)
         position.halfmove_clock = clock;
         int expected = clock >= 100 ? 0 : 900;
         result = search_at_horizon(position, 1, -INFINITE_SCORE, INFINITE_SCORE,
-                                   expected, &nodes);
-        assert(nodes == 1 && result.pv_length == 0);
+                                   expected, &stats);
+        assert(stats.nodes == 1 && result.pv_length == 0);
     }
     position.halfmove_clock = INT_MAX;
     result = search_at_horizon(position, MAX_SEARCH_PLY,
-                               -INFINITE_SCORE, INFINITE_SCORE, 0, &nodes);
-    assert(nodes == 1 && result.pv_length == 0);
+                               -INFINITE_SCORE, INFINITE_SCORE, 0, &stats);
+    assert(stats.nodes == 1 && result.pv_length == 0);
 
     /* Being in check does not prevent a draw if a legal evasion exists. */
     position = position_from_fen("7k/2p5/5K2/8/8/8/8/7R", "b", "-");
     position.halfmove_clock = 100;
-    result = search_at_horizon(position, 1, -600, -500, 0, &nodes);
-    assert(nodes == 1 && result.pv_length == 0);
+    result = search_at_horizon(position, 1, -600, -500, 0, &stats);
+    assert(stats.nodes == 1 && result.pv_length == 0);
 
     /* Checkmate still wins over the counter, including at the ply limit. */
     position = position_from_fen("k7/1Q6/2K5/8/8/8/8/8", "b", "-");
     position.halfmove_clock = 100;
     result = search_at_horizon(position, MAX_SEARCH_PLY, -INFINITE_SCORE, INFINITE_SCORE,
-                               -MATE_SCORE + MAX_SEARCH_PLY, &nodes);
-    assert(nodes == 1 && result.pv_length == 0);
+                               -MATE_SCORE + MAX_SEARCH_PLY, &stats);
+    assert(stats.nodes == 1 && result.pv_length == 0);
 
     /* Captures, en passant, and promotions reset the counter before the
        next quiescence node tests for a draw. */
     position = position_from_fen("7k/8/4p3/3Q4/8/8/8/K7", "b", "-");
     position.halfmove_clock = 99;
-    result = search_at_horizon(position, 1, -INFINITE_SCORE, INFINITE_SCORE, 100, &nodes);
+    result = search_at_horizon(position, 1, -INFINITE_SCORE, INFINITE_SCORE, 100, &stats);
     expect_move(result, "e6d5");
     position = position_from_fen("7k/8/8/3pP3/8/8/8/K7", "w", "d6");
     position.halfmove_clock = 99; /* Synthetic clock to isolate the reset. */
-    result = search_at_horizon(position, 1, -INFINITE_SCORE, INFINITE_SCORE, 100, &nodes);
+    result = search_at_horizon(position, 1, -INFINITE_SCORE, INFINITE_SCORE, 100, &stats);
     expect_move(result, "e5d6");
     position = position_from_fen("7k/4P3/8/8/8/8/8/7K", "w", "-");
     position.halfmove_clock = 99;
-    result = search_at_horizon(position, 1, -INFINITE_SCORE, INFINITE_SCORE, 900, &nodes);
+    result = search_at_horizon(position, 1, -INFINITE_SCORE, INFINITE_SCORE, 900, &stats);
     expect_move(result, "e7e8q");
 
     /* Castling is a king move without a capture, so it does not reset the
@@ -377,14 +434,16 @@ int main(void)
     position.castling[WHITE_QUEENSIDE] = 1;
     position.halfmove_clock = 99;
     struct Move castle = { 4, 2, EMPTY, -1, 0, 3 }; /* e1c1, rook a1d1 */
-    nodes = 0;
+    stats.nodes = 0;
+    stats.selective_depth = 0;
     success = negamax(&position, 2, 0, -INFINITE_SCORE, INFINITE_SCORE,
-                      &castle, NULL, &nodes, &result);
+                      &castle, NULL, &stats, &result);
     assert(success && result.score == 0 && result.pv_length == 1);
     expect_move(result, "e1c1");
     check_pv(position, result, 0);
 
     test_repetition();
+    test_selective_depth();
     puts("Search checks passed");
     return 0;
 }

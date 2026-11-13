@@ -63,6 +63,11 @@ struct SearchResult {
     struct Move pv[MAX_SEARCH_PLY];
 };
 
+struct SearchStats {
+    unsigned long long nodes; /* Total for the whole go command. */
+    int selective_depth;      /* Deepest visited ply in this iteration. */
+};
+
 static void remember_position(struct PositionHistory *history, const struct Position *position)
 {
     /* No earlier position can recur after a pawn move or capture. */
@@ -942,11 +947,15 @@ static int negamax(const struct Position *position, int depth, int ply,
                    int alpha, int beta,
                    const struct Move *preferred,
                    struct PositionHistory *history,
-                   unsigned long long *nodes, struct SearchResult *result)
+                   struct SearchStats *stats, struct SearchResult *result)
 {
-    if (*nodes == ULLONG_MAX)
+    if (stats->nodes == ULLONG_MAX)
         return 0;
-    (*nodes)++;
+    stats->nodes++;
+    /* Count every visited node, including quiescence and terminal leaves.
+       Each played move adds one ply; the root is ply zero. */
+    if (ply > stats->selective_depth)
+        stats->selective_depth = ply;
     result->pv_length = 0;
 
     struct Move *moves = malloc(MAX_MOVES * sizeof(struct Move));
@@ -1022,7 +1031,7 @@ static int negamax(const struct Position *position, int depth, int ply,
         }
         /* Changing sides negates scores and reverses the window's ends. */
         int success = negamax(&child, child_depth, ply + 1, -beta, -alpha,
-                              NULL, history, nodes, &reply);
+                              NULL, history, stats, &reply);
         /* Pop even on failure, before a cutoff or the next sibling move. */
         if (history != NULL)
             history->count--;
@@ -1053,10 +1062,10 @@ static int negamax(const struct Position *position, int depth, int ply,
 }
 
 static void print_search_info(int depth, const struct SearchResult *result,
-                              unsigned long long nodes)
+                              const struct SearchStats *stats)
 {
     int score = result->score;
-    printf("info depth %d score ", depth);
+    printf("info depth %d seldepth %d score ", depth, stats->selective_depth);
     if (abs(score) >= MATE_SCORE - MAX_SEARCH_PLY) {
         int plies = MATE_SCORE - abs(score);
         int moves_to_mate = (plies + 1) / 2;
@@ -1066,7 +1075,7 @@ static void print_search_info(int depth, const struct SearchResult *result,
     } else {
         printf("cp %d", score);
     }
-    printf(" nodes %llu", nodes);
+    printf(" nodes %llu", stats->nodes);
     if (result->pv_length > 0) {
         printf(" pv");
         for (int i = 0; i < result->pv_length; i++) {
@@ -1106,9 +1115,11 @@ static void read_go_command(const struct Position *position, const struct Positi
     struct PositionHistory search_history = *history;
     prepare_repetition_history(&search_history);
     /* Count all work for this go command, including the shallower searches. */
-    unsigned long long nodes = 0;
+    struct SearchStats stats;
+    stats.nodes = 0;
     struct SearchResult result;
     for (int current_depth = 1; current_depth <= depth; current_depth++) {
+        stats.selective_depth = 0;
         /* Only the root reuses a move, and only from a completed iteration
            of this go command. Recursive calls pass NULL. */
         const struct Move *preferred = NULL;
@@ -1116,7 +1127,7 @@ static void read_go_command(const struct Position *position, const struct Positi
             preferred = &result.pv[0];
         struct SearchResult iteration;
         if (!negamax(&root, current_depth, 0, -INFINITE_SCORE, INFINITE_SCORE,
-                     preferred, &search_history, &nodes, &iteration)) {
+                     preferred, &search_history, &stats, &iteration)) {
             puts("info string Cannot complete search");
             if (current_depth == 1)
                 return;
@@ -1124,7 +1135,7 @@ static void read_go_command(const struct Position *position, const struct Positi
         }
         /* A failed iteration must not replace the last completed result. */
         result = iteration;
-        print_search_info(current_depth, &result, nodes);
+        print_search_info(current_depth, &result, &stats);
     }
     if (result.pv_length > 0) {
         char text[6];

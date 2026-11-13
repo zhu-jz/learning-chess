@@ -1332,6 +1332,73 @@ failed-command rollback, repeated searches, and cleanup after a child fails.
 The earlier search and perft regressions continue to pass. Draws retain the
 teaching score of zero; exact reference search parity is still a later target.
 
+## Lesson 23: reporting the deepest visited ply
+
+The requested search depth does not describe every branch we visit.
+Quiescence can continue past the normal horizon to examine captures,
+promotions, and check evasions. We now print `seldepth` alongside `depth`
+to show the deepest ply reached anywhere in the current iteration.
+One ply is one move by either player; the root is ply zero.
+
+For example:
+
+```text
+position startpos
+go depth 4
+info depth 1 seldepth 1 score cp 0 nodes 21 pv b1a3
+info depth 2 seldepth 4 score cp 0 nodes 83 pv b1a3 a7a5
+info depth 3 seldepth 5 score cp 0 nodes 612 pv b1a3 a7a5 a1b1
+info depth 4 seldepth 8 score cp 0 nodes 2506 pv b1a3 a7a5 a1b1 a5a4
+bestmove b1a3
+```
+
+The last PV has four moves, but some explored branch reached eight plies.
+The three measurements answer different questions:
+
+- `depth` is the normal depth requested for this iteration.
+- `seldepth` is the largest distance from the root actually visited.
+- The PV contains the moves in the selected continuation, including any
+  quiescence moves that contribute to that result.
+
+`SearchStats` groups two ordinary counters: `nodes` and `selective_depth`.
+Each call to `negamax` increments the node count and compares its `ply`
+with the greatest ply seen so far. Updating at entry also counts terminal
+leaves, repetition and fifty-move draws, and leaves at the recursion cap.
+A terminal root reports zero because no move was searched. The cap keeps
+`seldepth` at or below 64.
+
+The counters have different lifetimes. `nodes` accumulates across all
+iterations of one `go` command. `selective_depth` starts at zero for each
+iteration. Nothing subtracts from it when recursion returns: it remembers
+the deepest branch already visited, even if that branch is later rejected.
+Both counters start fresh with a new `go` command.
+
+An iteration's selective depth can even decrease as move ordering and
+alpha-beta cutoffs change the branches visited. For this position:
+
+```text
+position fen 7k/8/3Q4/6r1/8/6p1/8/K7 w - - 0 1
+go depth 3
+info depth 1 seldepth 6 score cp 900 nodes 66 pv d6h6 h8g8 h6g5 g8f7 g5g3
+info depth 2 seldepth 5 score cp 900 nodes 147 pv d6h6 h8g8 h6g5 g8f7 g5g3
+info depth 3 seldepth 7 score cp 900 nodes 1170 pv d6h6 h8g8 h6g5 g8f7 g5g3
+bestmove d6h6
+```
+
+The drop from six to five makes a useful test: carrying the old maximum
+into the next iteration would give the wrong report. Other tests cover
+terminal roots, quiescence beyond the PV, rule draws, new searches, and the
+recursion limit. The earlier score, node-count, and PV checks still pass;
+this lesson only observes the search and prints one extra field. Examples
+in earlier lessons show the output format at those stages.
+
+This teaching definition differs from the reference's convention. The
+reference updates its stored selective depth at principal-variation nodes
+in the main search, excludes quiescence from that update, and adds one when
+printing the stored value. Our counter deliberately shows all visited
+plies so the effect of quiescence is visible. Matching the reference's
+precise reporting convention remains part of the later search-parity work.
+
 ## Build and try it
 
 From the project root in PowerShell, using MSYS2 UCRT64 GCC:
