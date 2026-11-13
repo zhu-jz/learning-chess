@@ -1153,7 +1153,7 @@ class UciTests(unittest.TestCase):
         self.expect_exit()
 
     def test_negamax_start_position_nodes_ties_and_preservation(self):
-        for depth, nodes in [(1, 21), (2, 83), (3, 612), (4, 2506), (1, 21)]:
+        for depth, nodes in [(1, 21), (2, 83), (3, 612), (4, 2494), (1, 21)]:
             self.expect_search(depth, "cp", 0, "b1a3", nodes)
             self.expect_position(START_POSITION)
         self.send("quit\n")
@@ -1162,7 +1162,7 @@ class UciTests(unittest.TestCase):
     def test_iterative_deepening_reports_all_iterations(self):
         self.send("go depth 4\n")
         line = ["b1a3", "a7a5", "a1b1", "a5a4"]
-        for depth, seldepth, nodes in [(1, 1, 21), (2, 4, 83), (3, 5, 612), (4, 8, 2506)]:
+        for depth, seldepth, nodes in [(1, 1, 21), (2, 4, 83), (3, 5, 612), (4, 8, 2494)]:
             self.assertEqual(self.read_search_info(depth, seldepth), ("cp", 0, nodes, line[:depth]))
         self.expect("bestmove b1a3")
         self.expect_position(START_POSITION)
@@ -1176,25 +1176,25 @@ class UciTests(unittest.TestCase):
 
     def test_iterative_deepening_uses_the_deepest_result(self):
         self.send("position fen 7k/8/4p3/3r4/8/8/8/K2Q4 w - - 0 1\ngo depth 3\n")
-        self.expect("info depth 1 seldepth 4 score cp 300 nodes 37 pv d1b1", timeout=60)
-        self.expect("info depth 2 seldepth 4 score cp 300 nodes 208 pv d1b1 d5d2", timeout=60)
-        self.expect("info depth 3 seldepth 6 score cp 400 nodes 1005 pv d1e1 d5d3 e1e6", timeout=60)
+        self.expect("info depth 1 seldepth 4 score cp 300 nodes 38 pv d1b1", timeout=60)
+        self.expect("info depth 2 seldepth 4 score cp 300 nodes 189 pv d1b1 d5d2", timeout=60)
+        self.expect("info depth 3 seldepth 6 score cp 400 nodes 1099 pv d1e1 d5d3 e1e6", timeout=60)
         # Depths one and two choose d1b1; depth three finds d1e1.
         self.expect("bestmove d1e1")
         self.send("position fen 7k/8/5K2/6Q1/8/8/8/8 b - - 0 1\ngo depth 3\n")
         self.expect("info depth 1 seldepth 1 score cp -900 nodes 2 pv h8h7", timeout=60)
-        self.expect("info depth 2 seldepth 3 score mate -1 nodes 35 pv h8h7 g5g7", timeout=60)
-        self.expect("info depth 3 seldepth 3 score mate -1 nodes 87 pv h8h7 g5g7", timeout=60)
+        self.expect("info depth 2 seldepth 3 score mate -1 nodes 36 pv h8h7 g5g7", timeout=60)
+        self.expect("info depth 3 seldepth 3 score mate -1 nodes 89 pv h8h7 g5g7", timeout=60)
         self.expect("bestmove h8h7")
         self.send("quit\n")
         self.expect_exit()
 
     def test_root_preference_resets_with_each_go(self):
         self.send("position fen 7k/8/4p3/3r4/8/8/8/K2Q4 w - - 0 1\n")
-        self.expect_search(3, "cp", 400, "d1e1", nodes=1005)
+        self.expect_search(3, "cp", 400, "d1e1", nodes=1099)
         # The previous go ended with d1e1, but depth one must start afresh.
-        self.expect_search(1, "cp", 300, "d1b1", nodes=37)
-        self.expect_search(3, "cp", 400, "d1e1", nodes=1005)
+        self.expect_search(1, "cp", 300, "d1b1", nodes=38)
+        self.expect_search(3, "cp", 400, "d1e1", nodes=1099)
         self.send("position startpos\n")
         self.expect_search(1, "cp", 0, "b1a3", nodes=21)
         self.expect_position(START_POSITION)
@@ -1202,13 +1202,13 @@ class UciTests(unittest.TestCase):
         self.expect_exit()
 
     def test_selective_depth_resets_for_each_iteration(self):
-        self.send("position fen 7k/8/3Q4/6r1/8/6p1/8/K7 w - - 0 1\ngo depth 3\n")
-        pv = ["d6h6", "h8g8", "h6g5", "g8f7", "g5g3"]
+        self.send("position fen 7k/8/8/5Q2/1r1p4/8/8/K7 w - - 0 1\ngo depth 3\n")
+        pv = ["f5f8", "h8h7", "f8b4"]
         # The PV stays the same while the deepest explored branch changes.
-        # Depth two must not retain depth one's maximum of six.
-        for depth, seldepth, nodes in [(1, 6, 66), (2, 5, 147), (3, 7, 1170)]:
-            self.assertEqual(self.read_search_info(depth, seldepth), ("cp", 900, nodes, pv))
-        self.expect("bestmove d6h6")
+        # Depth two must not retain depth one's maximum of four.
+        for depth, seldepth, nodes in [(1, 4, 42), (2, 3, 139), (3, 6, 472)]:
+            self.assertEqual(self.read_search_info(depth, seldepth), ("cp", 800, nodes, pv))
+        self.expect("bestmove f5f8")
         self.send("position startpos\ngo depth 1\n")
         self.assertEqual(self.read_search_info(1, 1), ("cp", 0, 21, ["b1a3"]))
         self.expect("bestmove b1a3")
@@ -1326,7 +1326,7 @@ class UciTests(unittest.TestCase):
         self.expect_search(1, "cp", 100, "b5c6", nodes=39)
         self.expect_search(2, "cp", 100, "b5c6", nodes=179)
         self.send("position fen r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1\n")
-        self.expect_search(3, "cp", 0, "e2a6", nodes=20762)
+        self.expect_search(3, "cp", 0, "e2a6", nodes=5809)
         self.send("quit\n")
         self.expect_exit()
 
@@ -1343,7 +1343,7 @@ class UciTests(unittest.TestCase):
         self.send("position fen 7k/8/4p3/3r4/8/8/8/K2Q4 w - - 0 1\n")
         # Quiescence sees exd5 beyond the horizon and rejects Qxd5 already
         # at depth one, instead of stopping after the apparent rook gain.
-        self.expect_search(1, "cp", 300, "d1b1", nodes=37)
+        self.expect_search(1, "cp", 300, "d1b1", nodes=38)
         self.expect_search(2, "cp", 300, "d1b1")
         self.send("quit\n")
         self.expect_exit()
@@ -1459,7 +1459,7 @@ class UciTests(unittest.TestCase):
             self.expect_search(1, "cp", -200, "a1a2", nodes=6)
         self.send(base + " moves " + cycle + " " + cycle + "\n")
         for repeat in range(2):
-            self.expect_search(3, "cp", 0, "b1a3", nodes=56)
+            self.expect_search(3, "cp", 0, "b1a3", nodes=57)
             self.expect_state({"a1": "K", "b1": "N", "e8": "r", "h8": "k"},
                               halfmove=8, fullmove=5)
         # The same board and clocks in FEN do not supply the preceding moves.
@@ -1476,7 +1476,7 @@ class UciTests(unittest.TestCase):
         self.send(base + " moves " + cycle + " " + cycle + "\n")
         self.send(base + " moves b1a3 h8g8 a3b1 bad\n")
         self.expect("info string Cannot play move bad")
-        self.expect_search(1, "cp", 0, "b1a3", nodes=6)
+        self.expect_search(1, "cp", 0, "b1a3", nodes=7)
         self.expect_state({"a1": "K", "b1": "N", "e8": "r", "h8": "k"},
                           halfmove=8, fullmove=5)
         self.send("quit\n")

@@ -261,6 +261,58 @@ static void test_selective_depth(void)
     assert(!success && stats.nodes == ULLONG_MAX && stats.selective_depth == 0);
 }
 
+static void test_principal_variation_search(void)
+{
+    struct Position position = position_from_fen("7k/8/4p3/3r4/8/8/8/K2Q4", "w", "-");
+    struct PositionHistory history;
+    history.count = 0;
+    remember_position(&history, &position);
+    prepare_repetition_history(&history);
+    struct SearchStats stats = { 0, 0 };
+    struct SearchResult result;
+
+    /* Qxd5 is searched first and loses to exd5. Later, Qb1 beats that
+       score: its scout uses node 13, and its full re-search uses node 14. */
+    int success = negamax(&position, 1, 0, -INFINITE_SCORE, INFINITE_SCORE,
+                          NULL, &history, &stats, &result);
+    assert(success && result.score == 300 && stats.nodes == 38);
+    expect_move(result, "d1b1");
+    check_pv(position, result, 0);
+    assert(history.count == 1);
+    assert(same_repetition_position(&position, &history.positions[0]));
+    assert(history.can_repeat[0] == 0);
+
+    /* When the scout already reaches beta, its bound proves a cutoff.
+       There is no need to pay for node 14 or the remaining moves. */
+    stats.nodes = 0;
+    stats.selective_depth = 0;
+    success = negamax(&position, 1, 0, -INFINITE_SCORE, 200,
+                      NULL, &history, &stats, &result);
+    assert(success && result.score >= 200 && stats.nodes == 13);
+    expect_move(result, "d1b1");
+    assert(history.count == 1);
+
+    /* An already narrow window needs no extra scout. A fail-low result
+       is an upper bound; it need not give the exact score or best line. */
+    stats.nodes = 0;
+    stats.selective_depth = 0;
+    success = negamax(&position, 1, 0, 300, 301,
+                      NULL, &history, &stats, &result);
+    assert(success && result.score <= 300 && stats.nodes == 31);
+    assert(history.count == 1);
+
+    /* Refuse either the scout's node 13 or the full re-search's node 14.
+       Both error paths must remove the child from repetition history. */
+    for (int allowed = 12; allowed <= 13; allowed++) {
+        stats.nodes = ULLONG_MAX - allowed;
+        stats.selective_depth = 0;
+        success = negamax(&position, 1, 0, -INFINITE_SCORE, INFINITE_SCORE,
+                          NULL, &history, &stats, &result);
+        assert(!success && stats.nodes == ULLONG_MAX && history.count == 1);
+        assert(same_repetition_position(&position, &history.positions[0]));
+    }
+}
+
 int main(void)
 {
     struct SearchStats stats = { 0, 0 };
@@ -342,7 +394,7 @@ int main(void)
     stats.nodes = 0;
     stats.selective_depth = 0;
     int success = negamax(&position, 4, 0, -INFINITE_SCORE, INFINITE_SCORE, NULL, NULL, &stats, &result);
-    assert(success && result.pv_length == 4 && stats.nodes == 1894);
+    assert(success && result.pv_length == 4 && stats.nodes == 1882);
     check_pv(position, result, 0);
     stats.nodes = 0;
     stats.selective_depth = 0;
@@ -444,6 +496,7 @@ int main(void)
 
     test_repetition();
     test_selective_depth();
+    test_principal_variation_search();
     puts("Search checks passed");
     return 0;
 }

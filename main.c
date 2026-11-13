@@ -1029,9 +1029,25 @@ static int negamax(const struct Position *position, int depth, int ply,
             history->can_repeat[history->count] = 1;
             history->count++;
         }
-        /* Changing sides negates scores and reverses the window's ends. */
-        int success = negamax(&child, child_depth, ply + 1, -beta, -alpha,
+        /* Keep the same child and history entry for both searches. */
+        int success;
+        if (depth > 0 && i > 0 && beta > alpha + 1) {
+            /* Later moves first ask only whether they can beat alpha.
+               With integer scores, no score lies between alpha and alpha+1.
+               Changing sides negates and reverses these window ends. */
+            success = negamax(&child, child_depth, ply + 1, -alpha - 1, -alpha,
                               NULL, history, stats, &reply);
+            /* A better move needs its full score and PV. A result at beta
+               already proves a cutoff, so it needs no second search. */
+            if (success && -reply.score > alpha && -reply.score < beta)
+                success = negamax(&child, child_depth, ply + 1, -beta, -alpha,
+                                  NULL, history, stats, &reply);
+        } else {
+            /* The first move uses the whole available window. Quiescence
+               and windows already one point wide keep ordinary alpha-beta. */
+            success = negamax(&child, child_depth, ply + 1, -beta, -alpha,
+                              NULL, history, stats, &reply);
+        }
         /* Pop even on failure, before a cutoff or the next sibling move. */
         if (history != NULL)
             history->count--;

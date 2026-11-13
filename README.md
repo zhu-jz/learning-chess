@@ -1399,6 +1399,87 @@ printing the stored value. Our counter deliberately shows all visited
 plies so the effect of quiescence is visible. Matching the reference's
 precise reporting convention remains part of the later search-parity work.
 
+## Lesson 24: principal variation search
+
+Our move ordering tries promising moves first: captures and promotions,
+with the previous iteration's best move moved to the front at the root.
+After searching the first move, many later moves will fail to improve it.
+Principal variation search (PVS) uses a narrow alpha-beta window to answer
+that question before paying for a more detailed search.
+
+The first move still uses the whole available window. For later moves in
+the normal search, we first search with the window `alpha` to `alpha + 1`.
+Scores are integers, so no score lies strictly between these endpoints.
+This is often called a zero-window search or a scout search. It establishes
+a bound on the score instead of finding an exact score inside the window.
+
+Suppose alpha is 100 and beta is 500. The scout uses 100 to 101, asking
+whether this move can do better than 100. Its result determines our next step:
+
+| Scout result, from the current player's perspective | Next step |
+| --- | --- |
+| At most alpha | The move cannot improve alpha; continue with the next move. |
+| Greater than alpha, but less than beta | Search this move again with the whole available window. |
+| At least beta | The bound already proves a cutoff; skip the remaining moves. |
+
+A successful scout only gives a lower bound on the move's score. For
+example, a result of 200 does not prove that 200 is its exact value. If
+that result is still below beta, the full re-search supplies the score and
+continuation we need, or establishes a cutoff at beta. The re-search uses
+the current `alpha` and `beta`, before this move changes either value.
+
+The child sees the opposite player's scores. Negating and reversing the
+scout window gives `-alpha - 1` to `-alpha`. The full re-search uses
+`-beta` to `-alpha`, just as our ordinary alpha-beta search did. Both calls
+search the same child at the same depth; PVS does not shorten the search.
+
+In `negamax`, one `if` selects the scout for later normal-search moves.
+Another `if` decides whether its result needs a full re-search. Quiescence
+keeps its existing alpha-beta loop. An incoming window already one point
+wide also keeps that loop, since it already asks the narrow question.
+At positive depth every generated legal move is searched unless a cutoff
+occurs, so `i > 0` identifies a later move without another counter.
+
+We append the child to repetition history once, before either call, and
+remove it once after both calls. A failed scout skips the re-search. A
+failed re-search follows the same cleanup path. Neither failure publishes
+an incomplete iteration. Both searches contribute to the node count and
+the iteration's maximum visited ply. A full re-search replaces the scout's
+temporary PV before the parent copies it.
+
+For the defended-rook example from earlier lessons, the current output is:
+
+```text
+position fen 7k/8/4p3/3r4/8/8/8/K2Q4 w - - 0 1
+go depth 3
+info depth 1 seldepth 4 score cp 300 nodes 38 pv d1b1
+info depth 2 seldepth 4 score cp 300 nodes 189 pv d1b1 d5d2
+info depth 3 seldepth 6 score cp 400 nodes 1099 pv d1e1 d5d3 e1e6
+bestmove d1e1
+```
+
+The score and PV agree with lesson 23. The node counts differ: that lesson
+used 37, 208, and 1005 cumulative nodes. At depth one, the first capture
+`Qxd5` loses to `exd5`; a later `Qb1` improves the score and needs a
+re-search. Good ordering can save work, but re-searches can also cost more.
+For the castling test position, depth three instead drops from 20762 to
+5809 cumulative nodes. PVS is useful without guaranteeing a reduction for
+every position. Selective depth can change too, because cutoffs change
+which branches are visited.
+
+Tests retain exact score, PV, and node expectations for the current search.
+Focused C checks exercise an improving scout, a scout that reaches beta,
+an already narrow window, and failure during either pass. The UCI checks
+still cover repeated searches, ties, draws, mate distance, and legal PVs.
+Forty comparisons against the lesson 23 executable preserved every reported
+score, PV, and final best move while allowing nodes and selective depth to
+change. Earlier lesson transcripts describe their historical search behavior.
+
+The reference also uses narrow searches followed by full PV searches, but
+combines them with reductions, extensions, cached results, and other rules
+we have not introduced. This lesson teaches the PVS decision itself;
+exact reference node counts and reporting conventions remain later work.
+
 ## Build and try it
 
 From the project root in PowerShell, using MSYS2 UCRT64 GCC:
