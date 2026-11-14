@@ -1642,6 +1642,102 @@ PVs, and final moves while allowing nodes and selective depth to change.
 Earlier transcripts retain their historical counts. Full reference search
 parity still requires the remaining search and evaluation mechanisms.
 
+## Lesson 27: remembering quiet moves that caused cutoffs
+
+Captures are easy to recognize as promising moves, but a strong move need
+not capture anything. A quiet move that reaches beta has already shown
+that the caller can reject this branch. At another position the same
+distance from the root, that move may provide a useful reply again.
+The killer-move heuristic remembers such moves and tries them earlier.
+
+`KillerMoves` contains a plain two-dimensional array:
+`moves[MAX_SEARCH_PLY][2]`. Each ply has two slots. Slot zero is the newest
+quiet cutoff, and slot one is the preceding distinct move. `clear_killers`
+fills both slots with a move whose `from` square is -1, marking an empty
+hint. The table is local to one `go` command and is passed explicitly
+through the search calls.
+
+When a normal-search move causes a beta cutoff, `is_quiet_move` checks
+that its destination was empty, it was not en passant, and it was not a
+promotion. Quiet pawn moves and castling qualify. Captures and promotions
+do not. A quiet check evasion can qualify in normal search, but quiescence
+neither uses nor updates this table. Improving alpha without reaching beta
+does not record a killer.
+
+`remember_killer` needs only a comparison and two assignments. If the move
+is already newest, the slots stay unchanged. Otherwise, the old newest
+move becomes second and the new move becomes first. Reusing the older
+move swaps their order; a third distinct move replaces the oldest one.
+Moves at one ply do not replace the slots at another ply.
+
+Normal search now orders moves in these stages:
+
+| Priority | Moves |
+| --- | --- |
+| First, at the root | The previous completed iteration's preferred move, if present |
+| Next | Captures and promotions, in the existing material-gain order |
+| Next | The newest legal quiet killer, then the older one |
+| Last | Other quiet moves, preserving their relative generation order |
+
+The code first performs the existing material sort. Every capture and
+promotion has a positive priority, while quiet moves have zero, so the
+quiet moves form the final part of that list. `order_killers` finds its
+first index, then passes `&moves[first_quiet]` and the remaining count to
+`search_move_first`. This is the same array, starting at a later element;
+no second move list is needed. Moving the older hint first, then the newer
+one, places the newer one ahead. The root preference is applied last so
+it remains first overall.
+
+A saved hint is never played directly. `same_move` compares its starting
+square, destination, and promotion choice against generated legal moves.
+The current legal entry supplies castling and en passant details. A hint
+that is illegal here is absent from the list and does nothing. A hint that
+has become a capture is outside the quiet part and keeps its ordinary
+capture ordering. No move is added or duplicated.
+
+The table persists across siblings, iterative-deepening iterations, PVS
+re-searches, and aspiration retries in the same `go`. These hints describe
+what worked during this search, so they are not undone with the board or
+repetition history. A new `go` clears them, even when there is no new
+`position` command. The recursion-cap return occurs before table access,
+so the last possible row is ply 63; there is no row for ply 64.
+
+For the starting position, the current output is:
+
+```text
+position startpos
+go depth 4
+info depth 1 seldepth 1 score cp 0 nodes 21 pv b1a3
+info depth 2 seldepth 4 score cp 0 nodes 83 pv b1a3 a7a5
+info depth 3 seldepth 5 score cp 0 nodes 612 pv b1a3 a7a5 a1b1
+info depth 4 seldepth 6 score cp 0 nodes 2166 pv b1a3 a7a5 a1b1 a5a4
+bestmove b1a3
+```
+
+Lesson 26 used 2494 cumulative nodes at depth four. Here the hints save
+work, but they are guesses: in the defended-rook fixture, depth-three work
+instead rises from 1415 to 1716 nodes. Its score remains 400, while the PV
+changes from `d1e1 d5d3 e1e6` to `d1e1 h8g7 e1e6`. Both Black replies have
+the same searched score. Changing the order can change which tied move
+is encountered first, so PVs need not match the preceding lesson.
+
+Tests cover distinct slots, replacement order, per-ply independence, stale
+hints, stable move lists, castling details, non-quiet exclusions, and the
+root preference. They also check quiescence, failed child searches, the
+recursion cap, and repeated `go` commands. Earlier focused C tests pass
+`NULL` for the table to isolate their original mechanism; every UCI search
+uses a real table. The 40 comparison cases preserve all iteration scores
+and final best moves. Two PVs change tied replies, and the UCI checks play
+those lines to verify their legality and scores.
+
+The reference also keeps two killer slots, but its wider history-update
+logic can record a quiet best move after an alpha improvement, and it
+clears some deeper slots as search enters new branches. Its staged move
+picker also treats captures and evasions differently. This lesson uses
+only quiet beta cutoffs and keeps the table for the whole `go`; matching
+those additional reference policies remains later work. Earlier lesson
+examples retain their historical ordering and counts.
+
 ## Build and try it
 
 From the project root in PowerShell, using MSYS2 UCRT64 GCC:
