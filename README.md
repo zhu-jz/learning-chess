@@ -1828,6 +1828,103 @@ the basic idea with simple arithmetic. Those reference update rules and
 full fixed-depth parity remain later work. Earlier lesson transcripts
 retain their historical results.
 
+## Lesson 29: penalizing quiet alternatives before a cutoff
+
+The previous lesson only rewarded quiet moves that caused beta cutoffs.
+We now also lower the history scores of earlier quiet moves tried at the
+same node. Those moves failed to reach beta before the successful move
+was found. That is useful ordering evidence, even though those moves may
+still be good in other positions.
+
+The update rule is deliberately small:
+
+| Move at this node | History change after a quiet cutoff |
+| --- | --- |
+| The quiet move that caused the cutoff | Add `depth * depth` |
+| An earlier quiet move that was searched | Subtract `depth * depth` |
+| An earlier capture or promotion | No quiet-history change |
+| Any later, unsearched move | No change |
+
+The reward helper is renamed `update_quiet_history` and now accepts a
+signed change. It clamps the result between `-HISTORY_LIMIT` and
+`HISTORY_LIMIT`, or -10000 and 10000. A reward can raise a negative entry,
+and a penalty can lower an entry already at the positive limit. The
+largest change remains 16 at our maximum normal depth of four, so adding
+or subtracting it fits easily in an `int` before clamping.
+
+`order_quiet_history` already compares integer scores, so it needs no
+changes. Positive entries sort before zero entries, which sort before
+negative entries. Equal negative scores retain their generation order.
+The capture and promotion prefix, killer priorities, and preferred root
+move still take precedence over history ordering.
+
+The new loop sits beside the existing reward inside the quiet-cutoff
+branch. If move `i` causes that cutoff, we examine indices zero through
+`i - 1` in the node's ordered move array. At positive depth, every one of
+those moves was searched: quiescence is the only place our loop skips
+quiet moves. A failure would already have returned, and an earlier cutoff
+would already have stopped the loop. We can therefore reuse this array
+instead of allocating another list of searched quiet moves.
+
+The move array stays in the order chosen at node entry, even while deeper
+searches update the shared hints. Each earlier quiet move receives one
+penalty in this call. PVS may have searched it twice, but it still occupies
+one array entry. An aspiration retry is a new search call and can supply
+new feedback of its own. Only the current player's history entries are
+changed by this node's update.
+
+For a small example, consider the defended-rook position with a root
+window ending at beta 200:
+
+```text
+7k/8/4p3/3r4/8/8/8/K2Q4 w - - 0 1
+```
+
+At depth one, the ordered search tries `Qxd5` first and sees `exd5`.
+Three quiet king moves also fail to reach beta. Then `Qb1` scores 300 and
+causes the cutoff. `Qb1` earns one point; `a1b1`, `a1a2`, and `a1b2`
+each lose one. The earlier capture keeps its history score, and later
+queen moves receive no update because they were never searched. At depth
+two, the same root alternatives lose four points each instead.
+
+With ordinary UCI iterative deepening, the current output is:
+
+```text
+position fen 7k/8/4p3/3r4/8/8/8/K2Q4 w - - 0 1
+go depth 3
+info depth 1 seldepth 4 score cp 300 nodes 38 pv d1b1
+info depth 2 seldepth 4 score cp 300 nodes 137 pv d1b1 d5d2
+info depth 3 seldepth 8 score cp 400 nodes 1656 pv d1e1 h8g7 e1e6
+bestmove d1e1
+```
+
+Lesson 28 used 1687 cumulative nodes at depth three. The new ordering
+saves work here, while the losing mate-in-two fixture rises from 547 to
+551 nodes. A history penalty is a guess about useful ordering, and does
+not guarantee fewer nodes.
+
+The policy only runs after a successful quiet beta cutoff in normal
+search. A capture or promotion cutoff does not trigger quiet penalties
+in this lesson. A node that finishes without a cutoff, a failed child or
+PVS re-search, and quiescence do not apply this update. Completed feedback
+from deeper nodes remains in the shared table; we do not roll it back.
+Each new `go` still clears both positive and negative scores.
+
+Tests check signed saturation and recovery, ordering around zero, stable
+negative ties, depth-weighted penalties, and the exact entries changed by
+the example. They also check unsearched moves, earlier captures, no-cutoff
+searches, capture cutoffs after a quiet alternative, and failures during
+a scout or re-search. All 40 comparisons preserve lesson 28's scores,
+PVs, and final best moves. The UCI fixtures keep explicit current node
+counts and test repeated searches.
+
+The reference also penalizes quiet alternatives, but uses different
+bonus and penalty formulas, damped signed updates, and broader conditions
+for updating its history tables. This lesson adds the negative feedback
+with ordinary subtraction and a bounded score. Those remaining policies
+and exact reference parity are still later work. Earlier lesson examples
+retain their historical ordering and counts.
+
 ## Build and try it
 
 From the project root in PowerShell, using MSYS2 UCRT64 GCC:

@@ -646,14 +646,14 @@ static void test_quiet_history(void)
     struct Position position;
     set_start_position(&position);
     struct Move pawn = legal_move_named(position, "e2e4");
-    reward_quiet_move(&hints, WHITE, pawn, 1);
-    reward_quiet_move(&hints, WHITE, pawn, 3);
+    update_quiet_history(&hints, WHITE, pawn, 1);
+    update_quiet_history(&hints, WHITE, pawn, 9);
     assert(hints.quiet_history[WHITE][12][28] == 10);
     assert(hints.quiet_history[BLACK][12][28] == 0);
     for (int i = 0; i < HISTORY_LIMIT; i++)
-        reward_quiet_move(&hints, WHITE, pawn, MAX_SEARCH_DEPTH);
+        update_quiet_history(&hints, WHITE, pawn, MAX_SEARCH_DEPTH * MAX_SEARCH_DEPTH);
     assert(hints.quiet_history[WHITE][12][28] == HISTORY_LIMIT);
-    reward_quiet_move(&hints, WHITE, pawn, 1);
+    update_quiet_history(&hints, WHITE, pawn, 1);
     assert(hints.quiet_history[WHITE][12][28] == HISTORY_LIMIT);
     /* Clearing a new go resets every entry, including both colors. */
     hints.quiet_history[BLACK][63][0] = 17;
@@ -679,7 +679,7 @@ static void test_quiet_history(void)
     /* Black's own table is used when Black moves. */
     position.side_to_move = BLACK;
     pawn = legal_move_named(position, "e7e5");
-    reward_quiet_move(&hints, BLACK, pawn, 2);
+    update_quiet_history(&hints, BLACK, pawn, 4);
     assert(hints.quiet_history[WHITE][52][36] == 0);
     stats.nodes = 0;
     success = negamax(&position, 1, 0, -1, 0, NULL, NULL, &hints, &stats, &result);
@@ -695,8 +695,8 @@ static void test_quiet_history(void)
     struct Move tie_b = legal_move_named(position, "a1a2");
     clear_move_hints(&hints);
     hints.quiet_history[WHITE][best_quiet.from][best_quiet.to] = HISTORY_LIMIT;
-    reward_quiet_move(&hints, WHITE, tie_b, 2);
-    reward_quiet_move(&hints, WHITE, tie_a, 2);
+    update_quiet_history(&hints, WHITE, tie_b, 4);
+    update_quiet_history(&hints, WHITE, tie_a, 4);
     hints.quiet_history[WHITE][0][16] = HISTORY_LIMIT; /* Illegal a1a3. */
     struct Move *moves = malloc(MAX_MOVES * sizeof(struct Move));
     struct Move *original = malloc(MAX_MOVES * sizeof(struct Move));
@@ -742,6 +742,131 @@ static void test_quiet_history(void)
     success = negamax(&position, 1, 0, -1, 0, &castle, NULL, &hints, &stats, &result);
     assert(success && stats.nodes == 2 && hints.quiet_history[WHITE][4][2] == 1);
     check_pv(position, result, 0);
+}
+
+static void expect_empty_quiet_history(const struct MoveHints *hints)
+{
+    for (int color = 0; color < 2; color++) {
+        for (int from = 0; from < 64; from++) {
+            for (int to = 0; to < 64; to++)
+                assert(hints->quiet_history[color][from][to] == 0);
+        }
+    }
+}
+
+static void test_history_penalties(void)
+{
+    struct MoveHints hints;
+    clear_move_hints(&hints);
+    struct Position position;
+    set_start_position(&position);
+    struct Move pawn = legal_move_named(position, "e2e4");
+    update_quiet_history(&hints, WHITE, pawn, 9);
+    update_quiet_history(&hints, WHITE, pawn, -4);
+    assert(hints.quiet_history[WHITE][12][28] == 5);
+    for (int i = 0; i < HISTORY_LIMIT; i++)
+        update_quiet_history(&hints, WHITE, pawn, -MAX_SEARCH_DEPTH * MAX_SEARCH_DEPTH);
+    assert(hints.quiet_history[WHITE][12][28] == -HISTORY_LIMIT);
+    update_quiet_history(&hints, WHITE, pawn, -1);
+    assert(hints.quiet_history[WHITE][12][28] == -HISTORY_LIMIT);
+    update_quiet_history(&hints, WHITE, pawn, 1);
+    assert(hints.quiet_history[WHITE][12][28] == -HISTORY_LIMIT + 1);
+    hints.quiet_history[WHITE][12][28] = HISTORY_LIMIT;
+    update_quiet_history(&hints, WHITE, pawn, -1);
+    assert(hints.quiet_history[WHITE][12][28] == HISTORY_LIMIT - 1);
+
+    /* Negative scores sort after untried zero-score moves, with stable ties. */
+    clear_move_hints(&hints);
+    struct Move a = legal_move_named(position, "b1a3");
+    struct Move b = legal_move_named(position, "b1c3");
+    update_quiet_history(&hints, WHITE, a, -4);
+    update_quiet_history(&hints, WHITE, b, -4);
+    update_quiet_history(&hints, WHITE, pawn, 1);
+    struct Move *moves = malloc(MAX_MOVES * sizeof(struct Move));
+    assert(moves != NULL);
+    int count = generate_moves(&position, moves);
+    assert(count == 20);
+    order_moves(&position, moves, count);
+    order_quiet_history(&position, moves, count, &hints);
+    expect_same_move(moves[0], pawn);
+    expect_same_move(moves[1], legal_move_named(position, "g1f3"));
+    expect_same_move(moves[count - 2], a);
+    expect_same_move(moves[count - 1], b);
+    free(moves);
+    clear_move_hints(&hints);
+    expect_empty_quiet_history(&hints);
+
+    /* Qxd5 fails first, then three quiet king moves fail. Qb1 cuts off.
+       Only those three quiet alternatives lose credit; later moves and
+       the earlier capture keep zero, as does the other color's table. */
+    position = position_from_fen("7k/8/4p3/3r4/8/8/8/K2Q4", "w", "-");
+    struct SearchStats stats = { 0, 0 };
+    struct SearchResult result;
+    int success = negamax(&position, 1, 0, -INFINITE_SCORE, 200,
+                          NULL, NULL, &hints, &stats, &result);
+    assert(success && result.score == 300 && stats.nodes == 13);
+    expect_move(result, "d1b1");
+    for (int color = 0; color < 2; color++) {
+        for (int from = 0; from < 64; from++) {
+            for (int to = 0; to < 64; to++) {
+                int expected = 0;
+                if (color == WHITE && from == 0 && (to == 1 || to == 8 || to == 9))
+                    expected = -1;
+                if (color == WHITE && from == 3 && to == 1)
+                    expected = 1;
+                assert(hints.quiet_history[color][from][to] == expected);
+            }
+        }
+    }
+
+    /* Without a cutoff, even losing alternatives receive no penalty. */
+    clear_move_hints(&hints);
+    stats.nodes = 0;
+    success = negamax(&position, 1, 0, -INFINITE_SCORE, INFINITE_SCORE,
+                      NULL, NULL, &hints, &stats, &result);
+    assert(success && result.score == 300);
+    expect_empty_quiet_history(&hints);
+
+    /* At depth two, the same root alternatives lose four points each.
+       Black may learn its own replies, but cannot change White's entries. */
+    clear_move_hints(&hints);
+    stats.nodes = 0;
+    success = negamax(&position, 2, 0, -INFINITE_SCORE, 200,
+                      NULL, NULL, &hints, &stats, &result);
+    assert(success && result.score == 300);
+    expect_move(result, "d1b1");
+    assert(hints.quiet_history[WHITE][0][1] == -4);
+    assert(hints.quiet_history[WHITE][0][8] == -4);
+    assert(hints.quiet_history[WHITE][0][9] == -4);
+    assert(hints.quiet_history[WHITE][3][1] == 4);
+    assert(hints.quiet_history[WHITE][3][2] == 0); /* Unsearched Qc1. */
+
+    /* Refuse the improving scout or its full re-search after those earlier
+       moves. Neither failure establishes a cutoff or permits penalties. */
+    struct PositionHistory history;
+    history.count = 0;
+    remember_position(&history, &position);
+    prepare_repetition_history(&history);
+    for (int allowed = 12; allowed <= 13; allowed++) {
+        clear_move_hints(&hints);
+        stats.nodes = ULLONG_MAX - allowed;
+        success = negamax(&position, 1, 0, -INFINITE_SCORE, 301,
+                          NULL, &history, &hints, &stats, &result);
+        assert(!success && history.count == 1);
+        expect_empty_quiet_history(&hints);
+    }
+
+    /* A capture cutoff does not trigger this quiet-history policy, even
+       when a quiet alternative was deliberately searched before it. */
+    position = position_from_fen("7k/8/8/8/8/2n5/8/KN6", "w", "-");
+    struct Move quiet = legal_move_named(position, "a1b2");
+    clear_move_hints(&hints);
+    stats.nodes = 0;
+    success = negamax(&position, 1, 0, -INFINITE_SCORE, 100,
+                      &quiet, NULL, &hints, &stats, &result);
+    assert(success && result.score == 300);
+    expect_move(result, "b1c3");
+    expect_empty_quiet_history(&hints);
 }
 
 int main(void)
@@ -933,6 +1058,7 @@ int main(void)
     test_killer_ordering();
     test_killer_search();
     test_quiet_history();
+    test_history_penalties();
     puts("Search checks passed");
     return 0;
 }

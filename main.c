@@ -954,13 +954,15 @@ static void clear_move_hints(struct MoveHints *hints)
     }
 }
 
-static void reward_quiet_move(struct MoveHints *hints, int color, struct Move move, int depth)
+static void update_quiet_history(struct MoveHints *hints, int color, struct Move move, int change)
 {
-    /* Deeper cutoffs earn more credit. Depth is at most MAX_SEARCH_DEPTH,
-       so even adding the largest bonus to the limit fits easily in int. */
-    int score = hints->quiet_history[color][move.from][move.to] + depth * depth;
+    /* Changes are plus or minus depth squared, with depth at most
+       MAX_SEARCH_DEPTH. The addition fits in int even at either limit. */
+    int score = hints->quiet_history[color][move.from][move.to] + change;
     if (score > HISTORY_LIMIT)
         score = HISTORY_LIMIT;
+    if (score < -HISTORY_LIMIT)
+        score = -HISTORY_LIMIT;
     hints->quiet_history[color][move.from][move.to] = score;
 }
 
@@ -1181,7 +1183,15 @@ static int negamax(const struct Position *position, int depth, int ply,
         if (alpha >= beta) {
             if (depth > 0 && hints != NULL && is_quiet_move(position, moves[i])) {
                 remember_killer(hints, ply, moves[i]);
-                reward_quiet_move(hints, position->side_to_move, moves[i], depth);
+                int bonus = depth * depth;
+                update_quiet_history(hints, position->side_to_move, moves[i], bonus);
+                /* At positive depth every earlier move was searched. Penalize
+                   its quiet alternatives once, even if PVS searched twice.
+                   Later moves were not tried and supply no evidence. */
+                for (int j = 0; j < i; j++) {
+                    if (is_quiet_move(position, moves[j]))
+                        update_quiet_history(hints, position->side_to_move, moves[j], -bonus);
+                }
             }
             break;
         }
