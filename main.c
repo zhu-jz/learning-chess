@@ -68,9 +68,11 @@ struct SearchStats {
     int selective_depth;      /* Deepest visited ply in this iteration. */
 };
 
-struct KillerMoves {
-    struct Move moves[MAX_SEARCH_PLY][2]; /* Newest quiet cutoff first. */
+struct MoveHints {
+    struct Move killers[MAX_SEARCH_PLY][2]; /* Newest quiet cutoff first. */
+    int quiet_history[2][64][64]; /* Color, starting square, destination. */
 };
+enum { HISTORY_LIMIT = 10000 };
 
 static void remember_position(struct PositionHistory *history, const struct Position *position)
 {
@@ -937,21 +939,37 @@ static int is_quiet_move(const struct Position *position, struct Move move)
         && move.en_passant_capture_square == -1 && move.promotion == EMPTY;
 }
 
-static void clear_killers(struct KillerMoves *killers)
+static void clear_move_hints(struct MoveHints *hints)
 {
     struct Move empty = { -1, -1, EMPTY, -1, -1, -1 };
     for (int ply = 0; ply < MAX_SEARCH_PLY; ply++) {
-        killers->moves[ply][0] = empty;
-        killers->moves[ply][1] = empty;
+        hints->killers[ply][0] = empty;
+        hints->killers[ply][1] = empty;
+    }
+    for (int color = 0; color < 2; color++) {
+        for (int from = 0; from < 64; from++) {
+            for (int to = 0; to < 64; to++)
+                hints->quiet_history[color][from][to] = 0;
+        }
     }
 }
 
-static void remember_killer(struct KillerMoves *killers, int ply, struct Move move)
+static void reward_quiet_move(struct MoveHints *hints, int color, struct Move move, int depth)
 {
-    if (same_move(move, killers->moves[ply][0]))
+    /* Deeper cutoffs earn more credit. Depth is at most MAX_SEARCH_DEPTH,
+       so even adding the largest bonus to the limit fits easily in int. */
+    int score = hints->quiet_history[color][move.from][move.to] + depth * depth;
+    if (score > HISTORY_LIMIT)
+        score = HISTORY_LIMIT;
+    hints->quiet_history[color][move.from][move.to] = score;
+}
+
+static void remember_killer(struct MoveHints *hints, int ply, struct Move move)
+{
+    if (same_move(move, hints->killers[ply][0]))
         return;
-    killers->moves[ply][1] = killers->moves[ply][0];
-    killers->moves[ply][0] = move;
+    hints->killers[ply][1] = hints->killers[ply][0];
+    hints->killers[ply][0] = move;
 }
 
 /* Move a matching hint to the front, keeping all other moves in their
@@ -968,6 +986,28 @@ static void search_move_first(struct Move moves[], int count, const struct Move 
             moves[0] = move;
             return;
         }
+    }
+}
+
+/* Sort only the quiet suffix, after material ordering has separated it
+   from captures and promotions. Equal history scores keep their order. */
+static void order_quiet_history(const struct Position *position, struct Move moves[], int count,
+                                const struct MoveHints *hints)
+{
+    int first_quiet = 0;
+    while (first_quiet < count && !is_quiet_move(position, moves[first_quiet]))
+        first_quiet++;
+    int color = position->side_to_move;
+    for (int i = first_quiet + 1; i < count; i++) {
+        struct Move move = moves[i];
+        int score = hints->quiet_history[color][move.from][move.to];
+        int j = i;
+        while (j > first_quiet
+               && hints->quiet_history[color][moves[j - 1].from][moves[j - 1].to] < score) {
+            moves[j] = moves[j - 1];
+            j--;
+        }
+        moves[j] = move;
     }
 }
 
@@ -993,7 +1033,7 @@ static int negamax(const struct Position *position, int depth, int ply,
                    int alpha, int beta,
                    const struct Move *preferred,
                    struct PositionHistory *history,
-                   struct KillerMoves *killers,
+                   struct MoveHints *hints,
                    struct SearchStats *stats, struct SearchResult *result)
 {
     if (stats->nodes == ULLONG_MAX)
@@ -1072,8 +1112,10 @@ static int negamax(const struct Position *position, int depth, int ply,
     }
 
     order_moves(position, moves, count);
-    if (depth > 0 && killers != NULL)
-        order_killers(position, moves, count, killers->moves[ply]);
+    if (depth > 0 && hints != NULL) {
+        order_quiet_history(position, moves, count, hints);
+        order_killers(position, moves, count, hints->killers[ply]);
+    }
     search_move_first(moves, count, preferred);
     for (int i = 0; i < count; i++) {
         /* In check we must search every evasion, including quiet moves.
@@ -1102,17 +1144,17 @@ static int negamax(const struct Position *position, int depth, int ply,
                With integer scores, no score lies between alpha and alpha+1.
                Changing sides negates and reverses these window ends. */
             success = negamax(&child, child_depth, ply + 1, -alpha - 1, -alpha,
-                              NULL, history, killers, stats, &reply);
+                              NULL, history, hints, stats, &reply);
             /* A better move needs its full score and PV. A result at beta
                already proves a cutoff, so it needs no second search. */
             if (success && -reply.score > alpha && -reply.score < beta)
                 success = negamax(&child, child_depth, ply + 1, -beta, -alpha,
-                                  NULL, history, killers, stats, &reply);
+                                  NULL, history, hints, stats, &reply);
         } else {
             /* The first move uses the whole available window. Quiescence
                and windows already one point wide keep ordinary alpha-beta. */
             success = negamax(&child, child_depth, ply + 1, -beta, -alpha,
-                              NULL, history, killers, stats, &reply);
+                              NULL, history, hints, stats, &reply);
         }
         /* Pop even on failure, before a cutoff or the next sibling move. */
         if (history != NULL)
@@ -1137,8 +1179,10 @@ static int negamax(const struct Position *position, int depth, int ply,
         /* The caller already has an alternative at least this good.
            Keep the score we found, but skip the remaining moves. */
         if (alpha >= beta) {
-            if (depth > 0 && killers != NULL && is_quiet_move(position, moves[i]))
-                remember_killer(killers, ply, moves[i]);
+            if (depth > 0 && hints != NULL && is_quiet_move(position, moves[i])) {
+                remember_killer(hints, ply, moves[i]);
+                reward_quiet_move(hints, position->side_to_move, moves[i], depth);
+            }
             break;
         }
     }
@@ -1179,7 +1223,7 @@ static void print_search_info(int depth, const struct SearchResult *result,
 static int search_iteration(const struct Position *position, int depth,
                             const struct SearchResult *previous,
                             struct PositionHistory *history,
-                            struct KillerMoves *killers,
+                            struct MoveHints *hints,
                             struct SearchStats *stats, struct SearchResult *result)
 {
     int alpha = -INFINITE_SCORE;
@@ -1202,7 +1246,7 @@ static int search_iteration(const struct Position *position, int depth,
     stats->selective_depth = 0;
     for (;;) {
         struct SearchResult attempt;
-        if (!negamax(position, depth, 0, alpha, beta, preferred, history, killers, stats, &attempt))
+        if (!negamax(position, depth, 0, alpha, beta, preferred, history, hints, stats, &attempt))
             return 0;
         if (attempt.score <= alpha) {
             /* Fail low: the score is only an upper bound. Reopen this side. */
@@ -1242,8 +1286,8 @@ static void read_go_command(const struct Position *position, const struct Positi
     root.fullmove_number = 1;
     struct PositionHistory search_history = *history;
     prepare_repetition_history(&search_history);
-    struct KillerMoves killers;
-    clear_killers(&killers);
+    struct MoveHints hints;
+    clear_move_hints(&hints);
     /* Count all work for this go command, including the shallower searches. */
     struct SearchStats stats;
     stats.nodes = 0;
@@ -1255,7 +1299,7 @@ static void read_go_command(const struct Position *position, const struct Positi
             previous = &result;
         struct SearchResult iteration;
         if (!search_iteration(&root, current_depth, previous,
-                              &search_history, &killers, &stats, &iteration)) {
+                              &search_history, &hints, &stats, &iteration)) {
             puts("info string Cannot complete search");
             if (current_depth == 1)
                 return;

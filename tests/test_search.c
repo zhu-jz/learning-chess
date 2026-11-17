@@ -1,7 +1,7 @@
 /* Include the engine in this test program so we can start directly at the
    quiescence horizon or recursion limit. Only its entry point is renamed.
-   Earlier checks pass NULL for killers to isolate their original mechanism;
-   the killer checks below use a real table, as every UCI search does. */
+   Earlier checks pass NULL for move hints to isolate their original mechanism;
+   the ordering checks below use real tables, as every UCI search does. */
 #define main uci_main
 #include "../main.c"
 #undef main
@@ -477,31 +477,31 @@ static struct Move legal_move_named(struct Position position, const char *name)
 
 static void test_killer_ordering(void)
 {
-    struct KillerMoves killers;
-    clear_killers(&killers);
+    struct MoveHints hints;
+    clear_move_hints(&hints);
     struct Position position;
     set_start_position(&position);
     struct Move a = legal_move_named(position, "e2e4");
     struct Move b = legal_move_named(position, "d2d4");
     struct Move c = legal_move_named(position, "g1f3");
-    remember_killer(&killers, 5, a);
-    remember_killer(&killers, 5, b);
-    remember_killer(&killers, 5, b); /* Repeating the newest keeps the older. */
-    expect_same_move(killers.moves[5][0], b);
-    expect_same_move(killers.moves[5][1], a);
-    remember_killer(&killers, 5, a); /* Reusing the older swaps their order. */
-    expect_same_move(killers.moves[5][0], a);
-    expect_same_move(killers.moves[5][1], b);
-    remember_killer(&killers, 5, c);
-    expect_same_move(killers.moves[5][0], c);
-    expect_same_move(killers.moves[5][1], a);
-    remember_killer(&killers, MAX_SEARCH_PLY - 1, b);
-    assert(killers.moves[4][0].from == -1);
-    expect_same_move(killers.moves[5][0], c);
-    clear_killers(&killers);
+    remember_killer(&hints, 5, a);
+    remember_killer(&hints, 5, b);
+    remember_killer(&hints, 5, b); /* Repeating the newest keeps the older. */
+    expect_same_move(hints.killers[5][0], b);
+    expect_same_move(hints.killers[5][1], a);
+    remember_killer(&hints, 5, a); /* Reusing the older swaps their order. */
+    expect_same_move(hints.killers[5][0], a);
+    expect_same_move(hints.killers[5][1], b);
+    remember_killer(&hints, 5, c);
+    expect_same_move(hints.killers[5][0], c);
+    expect_same_move(hints.killers[5][1], a);
+    remember_killer(&hints, MAX_SEARCH_PLY - 1, b);
+    assert(hints.killers[4][0].from == -1);
+    expect_same_move(hints.killers[5][0], c);
+    clear_move_hints(&hints);
     for (int ply = 0; ply < MAX_SEARCH_PLY; ply++) {
-        assert(killers.moves[ply][0].from == -1);
-        assert(killers.moves[ply][1].from == -1);
+        assert(hints.killers[ply][0].from == -1);
+        assert(hints.killers[ply][1].from == -1);
     }
 
     position = position_from_fen("7k/8/4p3/3r4/8/8/8/K2Q4", "w", "-");
@@ -516,9 +516,9 @@ static void test_killer_ordering(void)
     order_moves(&position, moves, count);
     for (int i = 0; i < count; i++)
         original[i] = moves[i];
-    remember_killer(&killers, 0, b);
-    remember_killer(&killers, 0, a);
-    order_killers(&position, moves, count, killers.moves[0]);
+    remember_killer(&hints, 0, b);
+    remember_killer(&hints, 0, a);
+    order_killers(&position, moves, count, hints.killers[0]);
     expect_same_move(moves[0], capture);
     expect_same_move(moves[1], a);
     expect_same_move(moves[2], b);
@@ -538,27 +538,27 @@ static void test_killer_ordering(void)
     /* A hint can be illegal here or become a capture. Neither belongs in
        the quiet suffix; the complete list and its stable order survive. */
     struct Move illegal = { 0, 16, EMPTY, -1, -1, -1 }; /* a1a3 */
-    killers.moves[0][0] = illegal;
-    killers.moves[0][1] = capture;
+    hints.killers[0][0] = illegal;
+    hints.killers[0][1] = capture;
     for (int i = 0; i < count; i++)
         moves[i] = original[i];
-    order_killers(&position, moves, count, killers.moves[0]);
+    order_killers(&position, moves, count, hints.killers[0]);
     for (int i = 0; i < count; i++)
         expect_same_move(moves[i], original[i]);
-    order_killers(&position, moves, 0, killers.moves[0]);
+    order_killers(&position, moves, 0, hints.killers[0]);
 
     /* Castling is quiet. Its fresh legal move must supply the rook squares
        even if the saved hint contains only from/to/promotion identity. */
     position = position_from_fen("7k/8/8/8/8/8/8/R3K3", "w", "-");
     position.castling[WHITE_QUEENSIDE] = 1;
     a = legal_move_named(position, "e1c1");
-    killers.moves[0][0] = a;
-    killers.moves[0][0].rook_from = -1;
-    killers.moves[0][0].rook_to = -1;
-    killers.moves[0][1] = illegal;
+    hints.killers[0][0] = a;
+    hints.killers[0][0].rook_from = -1;
+    hints.killers[0][0].rook_to = -1;
+    hints.killers[0][1] = illegal;
     count = generate_moves(&position, moves);
     order_moves(&position, moves, count);
-    order_killers(&position, moves, count, killers.moves[0]);
+    order_killers(&position, moves, count, hints.killers[0]);
     expect_same_move(moves[0], a);
     assert(is_quiet_move(&position, a));
     free(original);
@@ -570,16 +570,16 @@ static void test_killer_search(void)
     struct Position position;
     set_start_position(&position);
     struct Move preferred = legal_move_named(position, "e2e4");
-    struct KillerMoves killers;
-    clear_killers(&killers);
+    struct MoveHints hints;
+    clear_move_hints(&hints);
     struct SearchStats stats = { 0, 0 };
     struct SearchResult result;
-    int success = negamax(&position, 1, 5, -1, 0, &preferred, NULL, &killers, &stats, &result);
+    int success = negamax(&position, 1, 5, -1, 0, &preferred, NULL, &hints, &stats, &result);
     assert(success && stats.nodes == 2);
-    expect_same_move(killers.moves[5][0], preferred);
-    assert(killers.moves[4][0].from == -1 && killers.moves[6][0].from == -1);
+    expect_same_move(hints.killers[5][0], preferred);
+    assert(hints.killers[4][0].from == -1 && hints.killers[6][0].from == -1);
     stats.nodes = 0;
-    success = negamax(&position, 1, 5, -1, 0, NULL, NULL, &killers, &stats, &result);
+    success = negamax(&position, 1, 5, -1, 0, NULL, NULL, &hints, &stats, &result);
     assert(success && stats.nodes == 2);
     expect_move(result, "e2e4"); /* Reused without an explicit preference. */
 
@@ -590,47 +590,158 @@ static void test_killer_search(void)
         position = position_from_fen(boards[i], "w", i == 1 ? "d6" : "-");
         preferred = legal_move_named(position, names[i]);
         assert(!is_quiet_move(&position, preferred));
-        clear_killers(&killers);
+        clear_move_hints(&hints);
         stats.nodes = 0;
         success = negamax(&position, 1, 0, -INFINITE_SCORE, -5000,
-                          &preferred, NULL, &killers, &stats, &result);
+                          &preferred, NULL, &hints, &stats, &result);
         assert(success && result.score >= -5000);
         expect_move(result, names[i]);
-        assert(killers.moves[0][0].from == -1 && killers.moves[0][1].from == -1);
+        assert(hints.killers[0][0].from == -1 && hints.killers[0][1].from == -1);
+        assert(hints.quiet_history[WHITE][preferred.from][preferred.to] == 0);
     }
 
     /* Quiescence neither uses nor records killers. Two quiet evasions
        tie; the saved h8g8 must not displace the generated first h8g7. */
     position = position_from_fen("7k/8/8/8/8/8/8/K6R", "b", "-");
-    clear_killers(&killers);
+    clear_move_hints(&hints);
     preferred = legal_move_named(position, "h8g8");
-    remember_killer(&killers, 0, preferred);
+    remember_killer(&hints, 0, preferred);
+    hints.quiet_history[BLACK][preferred.from][preferred.to] = 100;
     stats.nodes = 0;
-    success = negamax(&position, 0, 0, -600, -500, NULL, NULL, &killers, &stats, &result);
+    success = negamax(&position, 0, 0, -600, -500, NULL, NULL, &hints, &stats, &result);
     assert(success && result.score == -500);
     expect_move(result, "h8g7");
-    expect_same_move(killers.moves[0][0], preferred);
-    assert(killers.moves[0][1].from == -1);
+    expect_same_move(hints.killers[0][0], preferred);
+    assert(hints.killers[0][1].from == -1);
+    assert(hints.quiet_history[BLACK][63][62] == 100); /* h8g8 */
+    assert(hints.quiet_history[BLACK][63][54] == 0);   /* h8g7 */
 
     /* Improving alpha alone is not a beta cutoff. */
     set_start_position(&position);
-    clear_killers(&killers);
+    clear_move_hints(&hints);
     stats.nodes = 0;
     success = negamax(&position, 1, 0, -INFINITE_SCORE, INFINITE_SCORE,
-                      NULL, NULL, &killers, &stats, &result);
+                      NULL, NULL, &hints, &stats, &result);
     assert(success && stats.nodes == 21);
-    assert(killers.moves[0][0].from == -1);
+    assert(hints.killers[0][0].from == -1);
+    assert(hints.quiet_history[WHITE][result.pv[0].from][result.pv[0].to] == 0);
 
     /* Failure before a child result cannot invent a quiet cutoff. */
     set_start_position(&position);
     stats.nodes = ULLONG_MAX - 1;
-    success = negamax(&position, 1, 0, -1, 0, NULL, NULL, &killers, &stats, &result);
-    assert(!success && killers.moves[0][0].from == -1);
+    success = negamax(&position, 1, 0, -1, 0, NULL, NULL, &hints, &stats, &result);
+    assert(!success && hints.killers[0][0].from == -1);
+    assert(hints.quiet_history[WHITE][1][16] == 0); /* b1a3 */
     /* At the hard cap there is no row 64 to access. */
     stats.nodes = 0;
     success = negamax(&position, 1, MAX_SEARCH_PLY, -1, 0,
-                      NULL, NULL, &killers, &stats, &result);
+                      NULL, NULL, &hints, &stats, &result);
     assert(success && stats.nodes == 1 && result.pv_length == 0);
+}
+
+static void test_quiet_history(void)
+{
+    struct MoveHints hints;
+    clear_move_hints(&hints);
+    struct Position position;
+    set_start_position(&position);
+    struct Move pawn = legal_move_named(position, "e2e4");
+    reward_quiet_move(&hints, WHITE, pawn, 1);
+    reward_quiet_move(&hints, WHITE, pawn, 3);
+    assert(hints.quiet_history[WHITE][12][28] == 10);
+    assert(hints.quiet_history[BLACK][12][28] == 0);
+    for (int i = 0; i < HISTORY_LIMIT; i++)
+        reward_quiet_move(&hints, WHITE, pawn, MAX_SEARCH_DEPTH);
+    assert(hints.quiet_history[WHITE][12][28] == HISTORY_LIMIT);
+    reward_quiet_move(&hints, WHITE, pawn, 1);
+    assert(hints.quiet_history[WHITE][12][28] == HISTORY_LIMIT);
+    /* Clearing a new go resets every entry, including both colors. */
+    hints.quiet_history[BLACK][63][0] = 17;
+    clear_move_hints(&hints);
+    for (int color = 0; color < 2; color++) {
+        for (int from = 0; from < 64; from++) {
+            for (int to = 0; to < 64; to++)
+                assert(hints.quiet_history[color][from][to] == 0);
+        }
+    }
+
+    /* A cutoff at ply three helps at ply five, which has no killer yet. */
+    struct SearchStats stats = { 0, 0 };
+    struct SearchResult result;
+    int success = negamax(&position, 1, 3, -1, 0, &pawn, NULL, &hints, &stats, &result);
+    assert(success && hints.quiet_history[WHITE][12][28] == 1);
+    assert(hints.killers[5][0].from == -1);
+    stats.nodes = 0;
+    success = negamax(&position, 1, 5, -1, 0, NULL, NULL, &hints, &stats, &result);
+    assert(success && stats.nodes == 2 && hints.quiet_history[WHITE][12][28] == 2);
+    expect_move(result, "e2e4");
+
+    /* Black's own table is used when Black moves. */
+    position.side_to_move = BLACK;
+    pawn = legal_move_named(position, "e7e5");
+    reward_quiet_move(&hints, BLACK, pawn, 2);
+    assert(hints.quiet_history[WHITE][52][36] == 0);
+    stats.nodes = 0;
+    success = negamax(&position, 1, 0, -1, 0, NULL, NULL, &hints, &stats, &result);
+    assert(success && stats.nodes == 2 && hints.quiet_history[BLACK][52][36] == 5);
+    expect_move(result, "e7e5");
+
+    /* History scores affect only the quiet suffix, with stable ties.
+       Even maximum credit for an absent move cannot add it to the list. */
+    position = position_from_fen("7k/8/4p3/3r4/8/8/8/K2Q4", "w", "-");
+    struct Move capture = legal_move_named(position, "d1d5");
+    struct Move best_quiet = legal_move_named(position, "d1b1");
+    struct Move tie_a = legal_move_named(position, "a1b1");
+    struct Move tie_b = legal_move_named(position, "a1a2");
+    clear_move_hints(&hints);
+    hints.quiet_history[WHITE][best_quiet.from][best_quiet.to] = HISTORY_LIMIT;
+    reward_quiet_move(&hints, WHITE, tie_b, 2);
+    reward_quiet_move(&hints, WHITE, tie_a, 2);
+    hints.quiet_history[WHITE][0][16] = HISTORY_LIMIT; /* Illegal a1a3. */
+    struct Move *moves = malloc(MAX_MOVES * sizeof(struct Move));
+    struct Move *original = malloc(MAX_MOVES * sizeof(struct Move));
+    assert(moves != NULL && original != NULL);
+    int count = generate_moves(&position, moves);
+    assert(count > 4);
+    order_moves(&position, moves, count);
+    for (int i = 0; i < count; i++)
+        original[i] = moves[i];
+    order_quiet_history(&position, moves, count, &hints);
+    expect_same_move(moves[0], capture);
+    expect_same_move(moves[1], best_quiet);
+    expect_same_move(moves[2], tie_a);
+    expect_same_move(moves[3], tie_b);
+    int next = 4;
+    for (int i = 1; i < count; i++) {
+        if (!same_move(original[i], best_quiet) && !same_move(original[i], tie_a)
+            && !same_move(original[i], tie_b))
+            expect_same_move(moves[next++], original[i]);
+    }
+    assert(next == count);
+    remember_killer(&hints, 0, tie_b);
+    order_killers(&position, moves, count, hints.killers[0]);
+    expect_same_move(moves[0], capture);
+    expect_same_move(moves[1], tie_b);
+    expect_same_move(moves[2], best_quiet);
+    search_move_first(moves, count, &tie_a);
+    expect_same_move(moves[0], tie_a);
+    expect_same_move(moves[1], capture);
+    expect_same_move(moves[2], tie_b);
+    expect_same_move(moves[3], best_quiet);
+    order_quiet_history(&position, moves, 0, &hints);
+    free(original);
+    free(moves);
+
+    /* Castling earns quiet credit using the king's starting and ending squares. */
+    position = position_from_fen("7k/8/8/8/8/8/8/R3K3", "w", "-");
+    position.castling[WHITE_QUEENSIDE] = 1;
+    position.halfmove_clock = 99;
+    struct Move castle = legal_move_named(position, "e1c1");
+    clear_move_hints(&hints);
+    stats.nodes = 0;
+    success = negamax(&position, 1, 0, -1, 0, &castle, NULL, &hints, &stats, &result);
+    assert(success && stats.nodes == 2 && hints.quiet_history[WHITE][4][2] == 1);
+    check_pv(position, result, 0);
 }
 
 int main(void)
@@ -821,6 +932,7 @@ int main(void)
     test_mate_distance_pruning();
     test_killer_ordering();
     test_killer_search();
+    test_quiet_history();
     puts("Search checks passed");
     return 0;
 }

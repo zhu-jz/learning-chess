@@ -1738,6 +1738,96 @@ only quiet beta cutoffs and keeps the table for the whole `go`; matching
 those additional reference policies remains later work. Earlier lesson
 examples retain their historical ordering and counts.
 
+## Lesson 28: ranking quiet moves with a history table
+
+Killer moves remember two recent cutoffs at a particular ply. The history
+heuristic keeps a broader record: a quiet move that helped at one ply can
+gain priority at another. We now keep an integer for each color, starting
+square, and destination in `quiet_history[2][64][64]`.
+
+For example, White's `e2e4` uses `quiet_history[WHITE][12][28]`. The entry
+does not depend on the current ply or the piece's type. White and Black
+have separate entries, even for identical square coordinates. This table
+is separate from `PositionHistory`, which records boards for repetition
+detection. The history heuristic records move-ordering hints.
+
+When a quiet normal-search move causes a beta cutoff, it earns a bonus
+of `depth * depth`, using the remaining depth at that node. A cutoff at
+depth one adds 1; one at depth three adds 9. Deeper cutoffs receive more
+weight because they may save more work. These numbers only affect move
+ordering. They are not centipawns and never enter the evaluation or the
+reported search score.
+
+`reward_quiet_move` adds the bonus and caps the entry at `HISTORY_LIMIT`,
+which is 10000. A capped entry stays at the limit on later rewards instead
+of overflowing. With the current maximum depth of four, the largest bonus
+is 16, so the addition itself fits easily in an `int`. This first version
+only adds credit; it does not penalize unsuccessful moves or reduce old
+credit. Entries at the limit can tie, and a new `go` clears the table.
+
+The old `KillerMoves` structure is now named `MoveHints`. It contains both
+the killer array and the quiet-history array. `clear_move_hints` clears
+both through ordinary loops, and the search passes one pointer to that
+structure. Hints remain available across siblings, iterations, PVS
+re-searches, and aspiration retries within one `go` command.
+
+Move ordering now happens in four explicit steps:
+
+1. Sort captures and promotions by the existing material-gain rule.
+2. Sort the final quiet part of the list by descending history score.
+3. Move the two killers to the front of that quiet part, newest first.
+4. Move the previous completed root choice to the very front, if present.
+
+`order_quiet_history` uses insertion sort, just like our earlier material
+sort. It moves an entry only past strictly lower scores. Equal history
+scores therefore preserve generation order before the killer and root
+hints are applied. The sort stays within the quiet part, so even a history
+score of 10000 cannot move a quiet move ahead of a capture or promotion.
+The legal list still supplies every move; table entries cannot introduce
+an illegal move or change castling details.
+
+The update sits beside the killer update inside the beta-cutoff branch.
+Captures, en passant, and promotions earn no quiet-history credit. Quiet
+pawn moves and castling qualify, with castling indexed by the king's start
+and destination. An alpha improvement without a cutoff earns no credit.
+Quiescence neither reads nor updates the table, including when a quiet
+check evasion causes a cutoff. A failed child search supplies no score
+and cannot produce a reward for that move.
+
+For the defended-rook example:
+
+```text
+position fen 7k/8/4p3/3r4/8/8/8/K2Q4 w - - 0 1
+go depth 3
+info depth 1 seldepth 4 score cp 300 nodes 38 pv d1b1
+info depth 2 seldepth 4 score cp 300 nodes 145 pv d1b1 d5d2
+info depth 3 seldepth 8 score cp 400 nodes 1687 pv d1e1 h8g7 e1e6
+bestmove d1e1
+```
+
+The previous lesson used 1716 cumulative nodes at depth three. The history
+table saves some work here, while many shallow fixtures remain unchanged:
+captures, killers, and the root preference already determine their useful
+ordering. History is a guess about which moves to try first, so it does
+not guarantee a node reduction for every position. Different ordering can
+also change tied choices, as the killer-move lesson demonstrated.
+
+Focused tests reward a move at one ply and reuse it at another with no
+killer present. They check color separation, weighted rewards, saturation,
+complete resets, stable ties, legal-list preservation, and the priority of
+captures, killers, and root hints. Existing cutoff tests now also check
+history exclusions and quiescence behavior. The UCI suite exercises the
+real tables and repeated searches. All 40 comparisons with lesson 27 keep
+the same iteration scores, PVs, and final best moves. The UCI tests retain
+exact node-count expectations for their regression fixtures.
+
+The reference also indexes its main history by color and move squares,
+but uses signed, damped updates, different bonuses, penalties, and other
+history tables in its move picker. Our capped positive rewards introduce
+the basic idea with simple arithmetic. Those reference update rules and
+full fixed-depth parity remain later work. Earlier lesson transcripts
+retain their historical results.
+
 ## Build and try it
 
 From the project root in PowerShell, using MSYS2 UCRT64 GCC:
