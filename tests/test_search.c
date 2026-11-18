@@ -575,6 +575,42 @@ static void test_capture_history(void)
     expect_same_move(moves[1], ep);
 }
 
+static void test_quiescence_capture_history(void)
+{
+    /* Qxd2 loses the queen to exd2; Qxg4 wins the other rook. With both
+       rooks priced alike, generation order puts Qxd2 first. */
+    struct Position position = position_from_fen("7k/8/8/8/3Q2r1/4p3/3r4/K7", "w", "-");
+    struct Move winning = legal_move_named(position, "d4g4");
+    struct MoveHints hints;
+    clear_move_hints(&hints);
+    struct SearchStats stats = { 0, 0 };
+    struct SearchResult result;
+    int success = negamax(&position, 0, 0, -INFINITE_SCORE, 100, -1, NULL, NULL,
+                          &hints, &stats, &result);
+    assert(success && result.score == 300 && stats.nodes == 4);
+    expect_same_move(result.pv[0], winning);
+
+    update_capture_history(&hints, &position, winning, 290);
+    struct MoveHints before = hints;
+    stats.nodes = 0;
+    success = negamax(&position, 0, 0, -INFINITE_SCORE, 100, -1, NULL, NULL,
+                      &hints, &stats, &result);
+    assert(success && result.score == 300 && stats.nodes == 2);
+    expect_same_move(result.pv[0], winning);
+    assert(memcmp(before.capture_history, hints.capture_history, sizeof(hints.capture_history)) == 0);
+
+    /* In check, a strongly remembered queen capture must not jump ahead
+       of the pawn capture that removes the same checking rook. */
+    position = position_from_fen("7k/8/8/Q2r4/2PK4/8/8/8", "w", "-");
+    struct Move queen = legal_move_named(position, "a5d5");
+    update_capture_history(&hints, &position, queen, 290);
+    stats.nodes = 0;
+    success = negamax(&position, 0, 0, -INFINITE_SCORE, 600, -1, NULL, NULL,
+                      &hints, &stats, &result);
+    assert(success && result.score == 1000);
+    expect_move(result, "c4d5");
+}
+
 static void test_killer_ordering(void)
 {
     struct MoveHints hints;
@@ -1208,6 +1244,7 @@ int main(void)
     test_capture_ordering();
     test_deferred_captures();
     test_capture_history();
+    test_quiescence_capture_history();
     test_killer_ordering();
     test_killer_search();
     test_countermoves();

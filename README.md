@@ -2200,6 +2200,41 @@ chose Bxa6 at depth three, but visited 6,200 nodes instead of 5,080.
 These counts measure the ordering change in our engine; matching one
 reference heuristic does not guarantee a smaller search tree.
 
+## Lesson 38: remember captures beyond the horizon
+
+White's queen on d4 can take either of two black rooks. The rook on d2
+is defended by a pawn on e3; the rook on g4 is undefended. Both captures
+have the same immediate gain. With an empty history table, generation
+order puts Qxd2 first. Quiescence looks at ...exd2 before trying Qxg4.
+If normal search has already given Qxg4 credit, quiescence can try it
+first. In the focused test, beta is +100. Qxg4 scores +300 and reaches
+beta in two nodes instead of four.
+
+Outside check, quiescence now reads the same capture score as normal
+search: victim price plus the history adjustment, as calculated in
+`capture_score`. It still considers the same captures and promotions.
+It does not write history or defer captures that fail SEE. When the king
+is in check, the engine keeps its existing order for escaping check.
+
+Across 40 fixed-depth comparisons with lesson 37, every iteration kept
+its score and every search kept its best move. One principal variation
+changed: at depth three in the castling fixture, the line still began
+`e2a6 b4c3 b2c3`, but Black continued with `f6d5` instead of `h3g2`.
+
+That position also shows why this ordering can cost nodes. We compared
+three ways to rank quiescence captures in the same engine:
+
+| Quiescence capture order | Depth 1 nodes | Depth 3 nodes |
+| --- | ---: | ---: |
+| Lesson 37: immediate gain, then cheaper attacker | 661 | 6,200 |
+| Reference victim prices, with history held at zero in quiescence | 2,462 | 7,930 |
+| Lesson 38: reference victim prices and learned history | 2,462 | 9,176 |
+
+Even an empty history can give a different order from lesson 37. For
+example, our teaching values price knights and bishops equally, while
+the reference prices a bishop above a knight. The middle row separates
+the change of scoring rule from the effect of reading learned entries.
+
 ## Build and try it
 
 From the project root in PowerShell, using MSYS2 UCRT64 GCC:

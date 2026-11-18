@@ -1426,7 +1426,9 @@ static int negamax(const struct Position *position, int depth, int ply,
     }
 
     const struct MoveHints *capture_order = NULL;
-    if (depth > 0 && !in_check)
+    /* Both normal search and quiescence rank captures by their history.
+       Check evasions keep their own order. Only normal search teaches the table. */
+    if (!in_check)
         capture_order = hints;
     order_moves(position, moves, count, capture_order);
     struct Move *countermove = NULL;
