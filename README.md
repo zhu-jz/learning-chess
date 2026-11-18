@@ -2164,6 +2164,42 @@ Three searches changed their node counts, all at depth three:
 SEE judges a sequence of captures on one square. It cannot tell us
 which move will cause the earliest cutoff in the full search.
 
+## Lesson 37: remembering which captures worked
+
+Suppose a pawn and a queen can both take a rook on d5. With no history,
+we try the pawn first. Now suppose Qxd5 was searched first at depth two
+and reached beta. The search adds 290 to the entry for **white queen,
+d5, rook**. A queen coming from a different square can reuse that
+experience. A pawn taking the same rook uses a different entry.
+
+In an ordinary search node outside check, we rank captures and promotions
+by `(7 * victim_price + history) / 16`. For this rook, the queen's score
+rises from 558 to 576 while the pawn's stays at 558. Next time, the
+queen goes first. Equal scores still use the earlier material and attacker
+tie-breaks. The same score sets the loss allowance from lesson 36. The
+board square before the move supplies the victim type: en passant and a
+promotion without a capture both use the empty-square entry.
+
+At the end of a normal search node, if the best move raised alpha, we
+update the history for that move when it was a capture or promotion.
+A beta cutoff qualifies, as does an improvement confirmed by searching
+the whole list. Among the first 32 moves tried, captures and promotions
+that failed to raise alpha receive a penalty, even if the winner was a
+quiet move. A scout and its re-search together supply one result.
+
+The update sizes come from the reference. At depth one the adjustment
+for a best capture is **−27**; at depth two it is **+290**. An unsuccessful
+depth-one capture gets **−134**. Each update also forgets a fraction of the
+old entry, so repeating a result has less effect as the entry grows.
+All iterations of one `go` share this table. A new `go` clears it.
+Quiescence neither reads nor updates capture history in this lesson.
+
+All 40 fixed-depth comparisons with lesson 36 kept the same scores,
+principal variations, and final best moves. The castling fixture still
+chose Bxa6 at depth three, but visited 6,200 nodes instead of 5,080.
+These counts measure the ordering change in our engine; matching one
+reference heuristic does not guarantee a smaller search tree.
+
 ## Build and try it
 
 From the project root in PowerShell, using MSYS2 UCRT64 GCC:

@@ -48,7 +48,7 @@ static void check_move_preference(struct Position position, const char *preferre
     assert(moves != NULL && original != NULL);
     int count = generate_moves(&position, moves);
     assert(count > 0);
-    order_moves(&position, moves, count);
+    order_moves(&position, moves, count, NULL);
     int selected = -1;
     for (int i = 0; i < count; i++) {
         original[i] = moves[i];
@@ -485,7 +485,7 @@ static void test_capture_ordering(void)
     struct Move queen = legal_move_named(position, "d1d5");
     struct Move pawn = legal_move_named(position, "c4d5");
     struct Move moves[] = { king, queen, pawn };
-    order_moves(&position, moves, 3);
+    order_moves(&position, moves, 3, NULL);
     expect_same_move(moves[0], pawn);
     expect_same_move(moves[1], queen);
     expect_same_move(moves[2], king);
@@ -496,7 +496,7 @@ static void test_capture_ordering(void)
     moves[0] = legal_move_named(position, "d1d5");
     pawn = legal_move_named(position, "e5d6");
     moves[1] = pawn;
-    order_moves(&position, moves, 2);
+    order_moves(&position, moves, 2, NULL);
     expect_same_move(moves[0], pawn);
 }
 
@@ -509,7 +509,7 @@ static void test_deferred_captures(void)
     struct Move king_step = legal_move_named(position, "a1b1");
     struct Move queen_step = legal_move_named(position, "d1b1");
     struct Move moves[] = { pawn, queen_rook, queen_pawn, king_step, queen_step };
-    defer_losing_captures(&position, moves, 5);
+    defer_losing_captures(&position, moves, 5, NULL);
     expect_same_move(moves[0], pawn);
     expect_same_move(moves[1], king_step);
     expect_same_move(moves[2], queen_step);
@@ -522,8 +522,57 @@ static void test_deferred_captures(void)
     struct Move bishop = legal_move_named(position, "c4d5");
     moves[0] = bishop;
     moves[1] = legal_move_named(position, "a1b1");
-    defer_losing_captures(&position, moves, 2);
+    defer_losing_captures(&position, moves, 2, NULL);
     expect_same_move(moves[0], bishop);
+}
+
+static void test_capture_history(void)
+{
+    /* Both pieces can take the rook. Search Qxd5 first at depth two and
+       let it cut off. Its entry should then outweigh the cheaper attacker. */
+    struct Position position = position_from_fen("7k/8/8/3r4/2P5/8/8/K2Q4", "w", "-");
+    struct Move pawn = legal_move_named(position, "c4d5");
+    struct Move queen = legal_move_named(position, "d1d5");
+    struct Move moves[] = { queen, pawn };
+    struct MoveHints hints;
+    clear_move_hints(&hints);
+    order_moves(&position, moves, 2, &hints);
+    expect_same_move(moves[0], pawn);
+
+    struct SearchStats stats = { 0, 0 };
+    struct SearchResult result;
+    int success = negamax(&position, 2, 0, -101, -100, -1, &queen, NULL, &hints, &stats, &result);
+    assert(success && result.score >= -100);
+    expect_same_move(result.pv[0], queen);
+    assert(hints.capture_history[WHITE_QUEEN][queen.to][WHITE_ROOK] == 290);
+    assert(hints.capture_history[WHITE_PAWN][queen.to][WHITE_ROOK] == 0);
+    order_moves(&position, moves, 2, &hints);
+    expect_same_move(moves[0], queen);
+    clear_move_hints(&hints);
+    order_moves(&position, moves, 2, &hints);
+    expect_same_move(moves[0], pawn);
+
+    /* This time Qxd5 fails to improve alpha, then a quiet move cuts off.
+       The capture loses credit even though the winning move was quiet. */
+    position = position_from_fen("7k/8/4p3/3r4/8/8/8/K2Q4", "w", "-");
+    success = negamax(&position, 1, 0, 199, 200, -1, &queen, NULL, &hints, &stats, &result);
+    assert(success && result.score >= 200);
+    assert(hints.capture_history[WHITE_QUEEN][queen.to][WHITE_ROOK] == -134);
+
+    /* En passant and a quiet promotion both have an empty destination.
+       A depth-one best move earns -27. Its score of -1 now demands SEE
+       of at least +1, so en passant (reference SEE zero) moves back. */
+    position = position_from_fen("7k/8/8/3pP3/8/8/8/K7", "w", "d6");
+    struct Move ep = legal_move_named(position, "e5d6");
+    moves[0] = ep;
+    moves[1] = legal_move_named(position, "a1a2");
+    success = negamax(&position, 1, 0, -INFINITE_SCORE, INFINITE_SCORE, -1, &ep, NULL,
+                      &hints, &stats, &result);
+    assert(success && same_move(result.pv[0], ep));
+    assert(hints.capture_history[WHITE_PAWN][ep.to][EMPTY] == -27);
+    assert(capture_score(&position, ep, &hints) == -1);
+    defer_losing_captures(&position, moves, 2, &hints);
+    expect_same_move(moves[1], ep);
 }
 
 static void test_killer_ordering(void)
@@ -564,7 +613,7 @@ static void test_killer_ordering(void)
     assert(moves != NULL && original != NULL);
     int count = generate_moves(&position, moves);
     assert(count > 3);
-    order_moves(&position, moves, count);
+    order_moves(&position, moves, count, NULL);
     for (int i = 0; i < count; i++)
         original[i] = moves[i];
     remember_killer(&hints, 0, b);
@@ -608,7 +657,7 @@ static void test_killer_ordering(void)
     hints.killers[0][0].rook_to = -1;
     hints.killers[0][1] = illegal;
     count = generate_moves(&position, moves);
-    order_moves(&position, moves, count);
+    order_moves(&position, moves, count, NULL);
     order_quiet_replies(&position, moves, count, hints.killers[0], NULL);
     expect_same_move(moves[0], a);
     assert(is_quiet_move(&position, a));
@@ -790,7 +839,7 @@ static void test_quiet_history(void)
     assert(moves != NULL && original != NULL);
     int count = generate_moves(&position, moves);
     assert(count > 4);
-    order_moves(&position, moves, count);
+    order_moves(&position, moves, count, NULL);
     for (int i = 0; i < count; i++)
         original[i] = moves[i];
     order_quiet_history(&position, moves, count, &hints);
@@ -886,7 +935,7 @@ static void test_history_penalties(void)
     assert(moves != NULL);
     int count = generate_moves(&position, moves);
     assert(count == 20);
-    order_moves(&position, moves, count);
+    order_moves(&position, moves, count, NULL);
     order_quiet_history(&position, moves, count, &hints);
     expect_same_move(moves[0], pawn);
     expect_same_move(moves[1], legal_move_named(position, "g1f3"));
@@ -1158,6 +1207,7 @@ int main(void)
     test_mate_distance_pruning();
     test_capture_ordering();
     test_deferred_captures();
+    test_capture_history();
     test_killer_ordering();
     test_killer_search();
     test_countermoves();

@@ -74,6 +74,7 @@ struct MoveHints {
     struct Move killers[MAX_SEARCH_PLY][2]; /* Newest quiet cutoff first. */
     struct Move countermove[PIECE_COUNT][64]; /* Previous piece and destination. */
     int quiet_history[2][64][64]; /* Color, starting square, destination. */
+    int capture_history[PIECE_COUNT][64][WHITE_KING + 1]; /* Mover, destination, victim type. */
 };
 enum { HISTORY_LIMIT = 10000 };
 
@@ -993,15 +994,19 @@ static void read_see_command(const struct Position *position)
     printf("info string see cp %d\n", static_exchange(position, move));
 }
 
-/* Exchange prices in the reference's units. A king is tried last as a
-   recapturer, but has no material price. enum Piece lists each color in
-   pawn, knight, bishop, rook, queen, king order. */
+/* Use the white piece codes as color-independent types; EMPTY stays zero. */
+static int piece_type(int piece)
+{
+    if (piece >= BLACK_PAWN)
+        return piece - (BLACK_PAWN - WHITE_PAWN);
+    return piece;
+}
+
 static int exchange_price(int piece)
 {
+    /* Reference units. A king is tried last but has no material price. */
     static const int prices[] = { 0, 208, 781, 825, 1276, 2538, 0 };
-    if (piece >= BLACK_PAWN)
-        piece -= BLACK_PAWN - WHITE_PAWN;
-    return prices[piece];
+    return prices[piece_type(piece)];
 }
 
 struct ExchangePins {
@@ -1131,10 +1136,30 @@ static void read_see_test_command(const struct Position *position)
     puts("info string Expected see_test followed by a legal capture and an integer threshold");
 }
 
-static int has_higher_priority(const struct Position *position, struct Move a, struct Move b)
+/* Read the destination before playing the move. For en passant and a
+   non-capturing promotion the reference indexes the EMPTY victim entry. */
+static int capture_score(const struct Position *position, struct Move move,
+                         const struct MoveHints *hints)
+{
+    int victim = position->board[move.to];
+    int mover = position->board[move.from];
+    int history = 0;
+    if (hints != NULL)
+        history = hints->capture_history[mover][move.to][piece_type(victim)];
+    return (7 * exchange_price(victim) + history) / 16;
+}
+
+static int has_higher_priority(const struct Position *position, struct Move a, struct Move b,
+                               const struct MoveHints *hints)
 {
     int gain_a = move_priority(position, a);
     int gain_b = move_priority(position, b);
+    if (hints != NULL && gain_a > 0 && gain_b > 0) {
+        int score_a = capture_score(position, a, hints);
+        int score_b = capture_score(position, b, hints);
+        if (score_a != score_b)
+            return score_a > score_b;
+    }
     if (gain_a != gain_b)
         return gain_a > gain_b;
 
@@ -1146,12 +1171,13 @@ static int has_higher_priority(const struct Position *position, struct Move a, s
 }
 
 /* Insertion sort: moving only past a strictly worse choice keeps ties stable. */
-static void order_moves(const struct Position *position, struct Move moves[], int count)
+static void order_moves(const struct Position *position, struct Move moves[], int count,
+                        const struct MoveHints *hints)
 {
     for (int i = 1; i < count; i++) {
         struct Move move = moves[i];
         int j = i;
-        while (j > 0 && has_higher_priority(position, move, moves[j - 1])) {
+        while (j > 0 && has_higher_priority(position, move, moves[j - 1], hints)) {
             moves[j] = moves[j - 1];
             j--;
         }
@@ -1172,16 +1198,14 @@ static int is_quiet_move(const struct Position *position, struct Move move)
 
 /* Insert each early move just before the deferred captures seen so far.
    Both groups keep their order, and no move is removed from the list. */
-static void defer_losing_captures(const struct Position *position, struct Move moves[], int count)
+static void defer_losing_captures(const struct Position *position, struct Move moves[], int count,
+                                  const struct MoveHints *hints)
 {
     int early_count = 0;
     for (int i = 0; i < count; i++) {
         struct Move move = moves[i];
-        int victim = position->board[move.to];
-        if (victim != EMPTY || move.en_passant_capture_square != -1) {
-            /* The reference also adds capture history to this numerator.
-               With no capture history yet, only the victim price contributes. */
-            int allowance = 7 * exchange_price(victim) / 16;
+        if (!is_quiet_move(position, move)) {
+            int allowance = capture_score(position, move, hints);
             if (!exchange_reaches(position, move, -allowance))
                 continue;
         }
@@ -1202,8 +1226,11 @@ static void clear_move_hints(struct MoveHints *hints)
         hints->killers[ply][1] = empty;
     }
     for (int piece = 0; piece < PIECE_COUNT; piece++) {
-        for (int to = 0; to < 64; to++)
+        for (int to = 0; to < 64; to++) {
             hints->countermove[piece][to] = empty;
+            for (int victim = EMPTY; victim <= WHITE_KING; victim++)
+                hints->capture_history[piece][to][victim] = 0;
+        }
     }
     for (int color = 0; color < 2; color++) {
         for (int from = 0; from < 64; from++) {
@@ -1225,6 +1252,29 @@ static void update_quiet_history(struct MoveHints *hints, int color, struct Move
     if (score < -HISTORY_LIMIT)
         score = -HISTORY_LIMIT;
     hints->quiet_history[color][move.from][move.to] = score;
+}
+
+static void update_capture_history(struct MoveHints *hints, const struct Position *position,
+                                   struct Move move, int change)
+{
+    int mover = position->board[move.from];
+    int victim = piece_type(position->board[move.to]);
+    int old = hints->capture_history[mover][move.to][victim];
+    hints->capture_history[mover][move.to][victim] = old + change - old * abs(change) / 10692;
+}
+
+/* The reference scales its bonuses and penalties separately. With our
+   maximum depth of four both depth formulas are in their linear range. */
+static void record_capture_results(struct MoveHints *hints, const struct Position *position,
+                                   int depth, struct Move best, struct Move failed[], int count)
+{
+    if (!is_quiet_move(position, best)) {
+        int bonus = (388 * depth - 421) * 839 / 1024;
+        update_capture_history(hints, position, best, bonus);
+    }
+    int penalty = (416 * depth - 284) * 1040 / 1024;
+    for (int i = 0; i < count; i++)
+        update_capture_history(hints, position, failed[i], -penalty);
 }
 
 static void remember_killer(struct MoveHints *hints, int ply, struct Move move)
@@ -1375,7 +1425,10 @@ static int negamax(const struct Position *position, int depth, int ply,
             alpha = result->score;
     }
 
-    order_moves(position, moves, count);
+    const struct MoveHints *capture_order = NULL;
+    if (depth > 0 && !in_check)
+        capture_order = hints;
+    order_moves(position, moves, count, capture_order);
     struct Move *countermove = NULL;
     if (depth > 0 && hints != NULL) {
         if (previous_to >= 0) {
@@ -1386,8 +1439,13 @@ static int negamax(const struct Position *position, int depth, int ply,
         order_quiet_replies(position, moves, count, hints->killers[ply], countermove);
     }
     if (depth > 0 && !in_check)
-        defer_losing_captures(position, moves, count);
+        defer_losing_captures(position, moves, count, capture_order);
     search_move_first(moves, count, preferred);
+    int starting_alpha = alpha;
+    /* Like the reference, learn from alternatives among the first 32 moves
+       tried. An improving move is never added to the list of failures. */
+    struct Move failed_captures[32];
+    int failed_count = 0;
     for (int i = 0; i < count; i++) {
         /* In check we must search every evasion, including quiet moves.
            Otherwise quiescence searches only captures and promotions. */
@@ -1447,6 +1505,8 @@ static int negamax(const struct Position *position, int depth, int ply,
         }
         if (score > alpha)
             alpha = score;
+        else if (depth > 0 && hints != NULL && i < 32 && !is_quiet_move(position, moves[i]))
+            failed_captures[failed_count++] = moves[i];
         /* The caller already has an alternative at least this good.
            Keep the score we found, but skip the remaining moves. */
         if (alpha >= beta) {
@@ -1467,6 +1527,10 @@ static int negamax(const struct Position *position, int depth, int ply,
             break;
         }
     }
+    /* A cutoff or a completed improvement supplies a best move. An upper
+       bound alone does not. A failed child returned before reaching here. */
+    if (depth > 0 && hints != NULL && alpha > starting_alpha)
+        record_capture_results(hints, position, depth, result->pv[0], failed_captures, failed_count);
     free(moves);
     return 1;
 }

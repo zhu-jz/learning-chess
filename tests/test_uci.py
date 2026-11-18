@@ -1403,9 +1403,9 @@ class UciTests(unittest.TestCase):
         # Bxc6 no longer appears to win a whole knight at depth one.
         self.send("position startpos moves e2e4 e7e5 g1f3 b8c6 f1b5 a7a6\n")
         self.expect_search(1, "cp", 100, "b5c6", nodes=39)
-        self.expect_search(2, "cp", 100, "b5c6", nodes=179)
+        self.expect_search(2, "cp", 100, "b5c6", nodes=181)
         self.send("position fen r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1\n")
-        self.expect_search(3, "cp", 0, "e2a6", nodes=5080)
+        self.expect_search(3, "cp", 0, "e2a6", nodes=6200)
         self.send("quit\n")
         self.expect_exit()
 
