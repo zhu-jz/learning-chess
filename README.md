@@ -1995,6 +1995,35 @@ can change how much work it takes to reach that result. The defended-rook
 fixture went from 1,656 to 1,659 nodes at depth three. In the losing
 mate-in-two test, depth four went from 551 to 522 nodes.
 
+## Lesson 32: choosing which piece takes the rook
+
+Put a white queen on d1, a white pawn on c4, and an undefended black rook
+on d5. Both `Qxd5` and `cxd5` gain 500 centipawns. Which capture should
+we try first? We choose the pawn. If there were a defender on d5, losing
+a pawn on the next move would cost less than losing a queen.
+
+`order_moves` still tries the larger immediate gain first, including any
+gain from promotion. When gains tie, it tries the cheaper attacker first.
+The king comes last among attackers. Knights and bishops have the same
+value here, so their original order breaks a tie. Quiet moves also keep
+their order for the later quiet-move rules.
+
+Try `position fen 7k/8/8/3r4/2P5/8/8/K2Q4 w - - 0 1` followed by
+`go depth 1`. Lesson 31 chose `d1d5`; this lesson chooses `c4d5`. Both
+searches scored the position at +1000 and visited 28 nodes. The first
+capture searched wins the tie.
+
+Static exchange evaluation (SEE) asks a further question: after the
+capture, what material can each side recover by recapturing on that
+square? Our ordering rule never looks for a defender. The reference's
+`movepick.py` first ranks captures using the victim and capture history,
+then uses `see_test` to decide which captures to try early and which to
+save for later.
+
+Across the 40 existing fixed-depth comparisons with lesson 31, all scores,
+principal variations, and best moves stayed the same. In the castling
+fixture at depth three, the node count fell from 5,695 to 5,373.
+
 ## Build and try it
 
 From the project root in PowerShell, using MSYS2 UCRT64 GCC:

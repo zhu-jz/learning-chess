@@ -1367,7 +1367,7 @@ class UciTests(unittest.TestCase):
         self.expect_search(1, "cp", 100, "b5c6", nodes=39)
         self.expect_search(2, "cp", 100, "b5c6", nodes=179)
         self.send("position fen r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1\n")
-        self.expect_search(3, "cp", 0, "e2a6", nodes=5695)
+        self.expect_search(3, "cp", 0, "e2a6", nodes=5373)
         self.send("quit\n")
         self.expect_exit()
 

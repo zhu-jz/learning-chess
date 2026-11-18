@@ -475,6 +475,30 @@ static struct Move legal_move_named(struct Position position, const char *name)
     return result;
 }
 
+static void test_capture_ordering(void)
+{
+    /* All three can take the same rook. Even a legal king capture is
+       ordered after the queen capture, despite the king's zero material price. */
+    struct Position position = position_from_fen("7k/8/8/3r4/2P1K3/8/8/3Q4", "w", "-");
+    struct Move king = legal_move_named(position, "e4d5");
+    struct Move queen = legal_move_named(position, "d1d5");
+    struct Move pawn = legal_move_named(position, "c4d5");
+    struct Move moves[] = { king, queen, pawn };
+    order_moves(&position, moves, 3);
+    expect_same_move(moves[0], pawn);
+    expect_same_move(moves[1], queen);
+    expect_same_move(moves[2], king);
+
+    /* The pawn takes en passant, so its destination is empty. Both moves
+       still gain one pawn, and the cheaper attacker goes first. */
+    position = position_from_fen("7k/8/8/3pP3/8/8/8/K2Q4", "w", "d6");
+    moves[0] = legal_move_named(position, "d1d5");
+    pawn = legal_move_named(position, "e5d6");
+    moves[1] = pawn;
+    order_moves(&position, moves, 2);
+    expect_same_move(moves[0], pawn);
+}
+
 static void test_killer_ordering(void)
 {
     struct MoveHints hints;
@@ -999,7 +1023,7 @@ int main(void)
     stats.nodes = 0;
     stats.selective_depth = 0;
     int success = negamax(&position, 4, 0, -INFINITE_SCORE, INFINITE_SCORE, -1, NULL, NULL, NULL, &stats, &result);
-    assert(success && result.pv_length == 4 && stats.nodes == 1882);
+    assert(success && result.pv_length == 4 && stats.nodes == 1876);
     check_pv(position, result, 0);
     stats.nodes = 0;
     stats.selective_depth = 0;
@@ -1104,6 +1128,7 @@ int main(void)
     test_principal_variation_search();
     test_aspiration_windows();
     test_mate_distance_pruning();
+    test_capture_ordering();
     test_killer_ordering();
     test_killer_search();
     test_countermoves();

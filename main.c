@@ -914,15 +914,36 @@ static int move_priority(const struct Position *position, struct Move move)
     return priority;
 }
 
-/* Insertion sort: put each move into the already ordered prefix. Moving
-   only past lower priorities preserves generation order when priorities tie. */
+/* A king has no material price in evaluate(), but comes last when we
+   choose between attackers. */
+static int attacker_value(int piece)
+{
+    if (piece == WHITE_KING || piece == BLACK_KING)
+        return INFINITE_SCORE;
+    return piece_value(piece);
+}
+
+static int has_higher_priority(const struct Position *position, struct Move a, struct Move b)
+{
+    int gain_a = move_priority(position, a);
+    int gain_b = move_priority(position, b);
+    if (gain_a != gain_b)
+        return gain_a > gain_b;
+
+    /* Keep quiet moves in their original order. Equal-gain promotions
+       without a capture also tie: their moving pieces are both pawns. */
+    if (gain_a == 0)
+        return 0;
+    return attacker_value(position->board[a.from]) < attacker_value(position->board[b.from]);
+}
+
+/* Insertion sort: moving only past a strictly worse choice keeps ties stable. */
 static void order_moves(const struct Position *position, struct Move moves[], int count)
 {
     for (int i = 1; i < count; i++) {
         struct Move move = moves[i];
-        int priority = move_priority(position, move);
         int j = i;
-        while (j > 0 && move_priority(position, moves[j - 1]) < priority) {
+        while (j > 0 && has_higher_priority(position, move, moves[j - 1])) {
             moves[j] = moves[j - 1];
             j--;
         }
