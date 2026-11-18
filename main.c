@@ -7,7 +7,8 @@
 enum Piece {
     EMPTY,
     WHITE_PAWN, WHITE_KNIGHT, WHITE_BISHOP, WHITE_ROOK, WHITE_QUEEN, WHITE_KING,
-    BLACK_PAWN, BLACK_KNIGHT, BLACK_BISHOP, BLACK_ROOK, BLACK_QUEEN, BLACK_KING
+    BLACK_PAWN, BLACK_KNIGHT, BLACK_BISHOP, BLACK_ROOK, BLACK_QUEEN, BLACK_KING,
+    PIECE_COUNT
 };
 
 enum Color { WHITE, BLACK };
@@ -70,6 +71,7 @@ struct SearchStats {
 
 struct MoveHints {
     struct Move killers[MAX_SEARCH_PLY][2]; /* Newest quiet cutoff first. */
+    struct Move countermove[PIECE_COUNT][64]; /* Previous piece and destination. */
     int quiet_history[2][64][64]; /* Color, starting square, destination. */
 };
 enum { HISTORY_LIMIT = 10000 };
@@ -946,6 +948,10 @@ static void clear_move_hints(struct MoveHints *hints)
         hints->killers[ply][0] = empty;
         hints->killers[ply][1] = empty;
     }
+    for (int piece = 0; piece < PIECE_COUNT; piece++) {
+        for (int to = 0; to < 64; to++)
+            hints->countermove[piece][to] = empty;
+    }
     for (int color = 0; color < 2; color++) {
         for (int from = 0; from < 64; from++) {
             for (int to = 0; to < 64; to++)
@@ -1016,16 +1022,17 @@ static void order_quiet_history(const struct Position *position, struct Move mov
 }
 
 /* Material ordering has placed every capture and promotion before the
-   quiet moves. Move killers only within that quiet part of the legal list. */
-static void order_killers(const struct Position *position, struct Move moves[], int count,
-                          const struct Move killers[2])
+   quiet moves. Look for each remembered reply only among legal quiet moves. */
+static void order_quiet_replies(const struct Position *position, struct Move moves[], int count,
+                                const struct Move killers[2], const struct Move *countermove)
 {
     int first_quiet = 0;
     while (first_quiet < count && !is_quiet_move(position, moves[first_quiet]))
         first_quiet++;
     if (first_quiet == count)
         return;
-    /* Put the older hint first, then the newer one ahead of it. */
+    /* Moving each hint to the front leaves both killers ahead of the countermove. */
+    search_move_first(&moves[first_quiet], count - first_quiet, countermove);
     search_move_first(&moves[first_quiet], count - first_quiet, &killers[1]);
     search_move_first(&moves[first_quiet], count - first_quiet, &killers[0]);
 }
@@ -1035,7 +1042,7 @@ static void order_killers(const struct Position *position, struct Move moves[], 
    At depth zero, the same recursion becomes a quiescence search. */
 static int negamax(const struct Position *position, int depth, int ply,
                    int alpha, int beta,
-                   const struct Move *preferred,
+                   int previous_to, const struct Move *preferred,
                    struct PositionHistory *history,
                    struct MoveHints *hints,
                    struct SearchStats *stats, struct SearchResult *result)
@@ -1116,9 +1123,14 @@ static int negamax(const struct Position *position, int depth, int ply,
     }
 
     order_moves(position, moves, count);
+    struct Move *countermove = NULL;
     if (depth > 0 && hints != NULL) {
+        if (previous_to >= 0) {
+            int piece = position->board[previous_to];
+            countermove = &hints->countermove[piece][previous_to];
+        }
         order_quiet_history(position, moves, count, hints);
-        order_killers(position, moves, count, hints->killers[ply]);
+        order_quiet_replies(position, moves, count, hints->killers[ply], countermove);
     }
     search_move_first(moves, count, preferred);
     for (int i = 0; i < count; i++) {
@@ -1148,17 +1160,17 @@ static int negamax(const struct Position *position, int depth, int ply,
                With integer scores, no score lies between alpha and alpha+1.
                Changing sides negates and reverses these window ends. */
             success = negamax(&child, child_depth, ply + 1, -alpha - 1, -alpha,
-                              NULL, history, hints, stats, &reply);
+                              moves[i].to, NULL, history, hints, stats, &reply);
             /* A better move needs its full score and PV. A result at beta
                already proves a cutoff, so it needs no second search. */
             if (success && -reply.score > alpha && -reply.score < beta)
                 success = negamax(&child, child_depth, ply + 1, -beta, -alpha,
-                                  NULL, history, hints, stats, &reply);
+                                  moves[i].to, NULL, history, hints, stats, &reply);
         } else {
             /* The first move uses the whole available window. Quiescence
                and windows already one point wide keep ordinary alpha-beta. */
             success = negamax(&child, child_depth, ply + 1, -beta, -alpha,
-                              NULL, history, hints, stats, &reply);
+                              moves[i].to, NULL, history, hints, stats, &reply);
         }
         /* Pop even on failure, before a cutoff or the next sibling move. */
         if (history != NULL)
@@ -1185,6 +1197,8 @@ static int negamax(const struct Position *position, int depth, int ply,
         if (alpha >= beta) {
             if (depth > 0 && hints != NULL && is_quiet_move(position, moves[i])) {
                 remember_killer(hints, ply, moves[i]);
+                if (countermove != NULL)
+                    *countermove = moves[i];
                 int bonus = depth * depth;
                 update_quiet_history(hints, position->side_to_move, moves[i], bonus);
                 /* At positive depth every earlier move was searched. Penalize
@@ -1258,7 +1272,7 @@ static int search_iteration(const struct Position *position, int depth,
     stats->selective_depth = 0;
     for (;;) {
         struct SearchResult attempt;
-        if (!negamax(position, depth, 0, alpha, beta, preferred, history, hints, stats, &attempt))
+        if (!negamax(position, depth, 0, alpha, beta, -1, preferred, history, hints, stats, &attempt))
             return 0;
         if (attempt.score <= alpha) {
             /* Fail low: the score is only an upper bound. Reopen this side. */

@@ -1962,6 +1962,39 @@ fixed-depth comparison runs produced identical UCI transcripts in these
 two lessons, including node counts. The focused C checks exercise larger
 positive and negative scores where the effect is visible.
 
+## Lesson 31: remembering a reply to the opponent's move
+
+Suppose White plays `e2e4` and Black finds a quiet reply that reaches beta.
+Later in the search, a white pawn again arrives on e4. Black can try the
+remembered reply early, even at a different ply. This is a *countermove*.
+
+`MoveHints` now stores one reply per colored piece and destination square.
+After `e2e4`, the entry is `countermove[WHITE_PAWN][28]`. Each recursive
+call passes the destination of the move it just played, including on a PVS
+re-search. The child reads the piece on that square from its own board.
+For a promotion, this selects the promoted piece. At the root, a value of
+-1 marks the start of the search path.
+
+The move list already contains the legal moves for the current position.
+Within its quiet part, the search tries the two killers, the remembered
+reply, and then the remaining moves in history order. Moving an existing
+entry to the front preserves a single copy when a killer and a countermove
+name the same reply. A reply that has become illegal or is now a capture
+has no match in the quiet part. The previous iteration's root choice
+continues to take first priority at the root.
+
+A quiet beta cutoff in normal search replaces the entry for the preceding
+move. One table serves all iterations and aspiration retries of a single
+`go`. The next `go` starts with an empty table. This teaching policy uses
+the reference's piece-and-square key. The reference also updates replies
+through its broader quiet-history rules.
+
+Across 40 fixed-depth comparisons with lesson 30, every iteration agreed
+on the score and PV, and each search chose the same final move. Ordering
+can change how much work it takes to reach that result. The defended-rook
+fixture went from 1,656 to 1,659 nodes at depth three. In the losing
+mate-in-two test, depth four went from 551 to 522 nodes.
+
 ## Build and try it
 
 From the project root in PowerShell, using MSYS2 UCRT64 GCC:
