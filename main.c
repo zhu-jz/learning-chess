@@ -1190,6 +1190,38 @@ static int same_move(struct Move a, struct Move b)
     return a.from == b.from && a.to == b.to && a.promotion == b.promotion;
 }
 
+/* In check the reference scores a capture by the price on the destination
+   minus the attacker's type (pawn 1 through king 6). Even en passant,
+   whose destination is empty, must rank above the largest quiet score. */
+static int evasion_score(const struct Position *position, struct Move move,
+                         const struct MoveHints *hints)
+{
+    int victim = position->board[move.to];
+    if (victim != EMPTY || move.en_passant_capture_square != -1) {
+        int capture_base = HISTORY_LIMIT + WHITE_KING + 1;
+        return capture_base + exchange_price(victim) - piece_type(position->board[move.from]);
+    }
+    if (hints == NULL)
+        return 0;
+    return hints->quiet_history[position->side_to_move][move.from][move.to];
+}
+
+/* Keep every legal escape, including blocks and non-capturing promotions. */
+static void order_evasions(const struct Position *position, struct Move moves[], int count,
+                           const struct MoveHints *hints)
+{
+    for (int i = 1; i < count; i++) {
+        struct Move move = moves[i];
+        int score = evasion_score(position, move, hints);
+        int j = i;
+        while (j > 0 && evasion_score(position, moves[j - 1], hints) < score) {
+            moves[j] = moves[j - 1];
+            j--;
+        }
+        moves[j] = move;
+    }
+}
+
 static int is_quiet_move(const struct Position *position, struct Move move)
 {
     return position->board[move.to] == EMPTY
@@ -1425,23 +1457,23 @@ static int negamax(const struct Position *position, int depth, int ply,
             alpha = result->score;
     }
 
-    const struct MoveHints *capture_order = NULL;
-    /* Both normal search and quiescence rank captures by their history.
-       Check evasions keep their own order. Only normal search teaches the table. */
-    if (!in_check)
-        capture_order = hints;
-    order_moves(position, moves, count, capture_order);
     struct Move *countermove = NULL;
-    if (depth > 0 && hints != NULL) {
-        if (previous_to >= 0) {
-            int piece = position->board[previous_to];
-            countermove = &hints->countermove[piece][previous_to];
-        }
-        order_quiet_history(position, moves, count, hints);
-        order_quiet_replies(position, moves, count, hints->killers[ply], countermove);
+    if (depth > 0 && hints != NULL && previous_to >= 0) {
+        int piece = position->board[previous_to];
+        countermove = &hints->countermove[piece][previous_to];
     }
-    if (depth > 0 && !in_check)
-        defer_losing_captures(position, moves, count, capture_order);
+    if (in_check) {
+        order_evasions(position, moves, count, hints);
+    } else {
+        order_moves(position, moves, count, hints);
+        if (depth > 0) {
+            if (hints != NULL) {
+                order_quiet_history(position, moves, count, hints);
+                order_quiet_replies(position, moves, count, hints->killers[ply], countermove);
+            }
+            defer_losing_captures(position, moves, count, hints);
+        }
+    }
     search_move_first(moves, count, preferred);
     int starting_alpha = alpha;
     /* Like the reference, learn from alternatives among the first 32 moves

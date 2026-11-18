@@ -611,6 +611,41 @@ static void test_quiescence_capture_history(void)
     expect_move(result, "c4d5");
 }
 
+static void test_evasion_ordering(void)
+{
+    struct Position position = position_from_fen("4r2k/8/8/1B6/8/8/8/4K3", "w", "-");
+    struct MoveHints hints;
+    clear_move_hints(&hints);
+    struct Move block = legal_move_named(position, "b5e2");
+    hints.quiet_history[WHITE][block.from][block.to] = HISTORY_LIMIT;
+    struct Move *moves = malloc(MAX_MOVES * sizeof(struct Move));
+    assert(moves != NULL && is_in_check(&position, WHITE));
+    int count = generate_moves(&position, moves);
+    assert(count == 6);
+    order_evasions(&position, moves, count, &hints);
+    /* The bishop takes the checker or blocks it. All four king steps
+       still follow in their original order, even though their scores tie. */
+    const char *expected[] = { "b5e8", "b5e2", "e1d1", "e1f1", "e1d2", "e1f2" };
+    for (int i = 0; i < count; i++)
+        expect_same_move(moves[i], legal_move_named(position, expected[i]));
+
+    /* En passant can remove a checking pawn. Its empty destination must
+       not put it behind a highly rated king escape. */
+    position = position_from_fen("7k/8/8/3pP3/4K3/8/8/8", "w", "d6");
+    struct Move ep = legal_move_named(position, "e5d6");
+    struct Move step = legal_move_named(position, "e4f4");
+    hints.quiet_history[WHITE][step.from][step.to] = HISTORY_LIMIT;
+    assert(evasion_score(&position, ep, &hints) > evasion_score(&position, step, &hints));
+    /* Promoting on d8 blocks the rook's check along the eighth rank.
+       With no victim, choosing a queen adds no capture bonus. */
+    position = position_from_fen("r6K/3P4/8/8/8/8/8/7k", "w", "-");
+    block = legal_move_named(position, "d7d8q");
+    step = legal_move_named(position, "h8g7");
+    hints.quiet_history[WHITE][step.from][step.to] = 1;
+    assert(evasion_score(&position, block, &hints) < evasion_score(&position, step, &hints));
+    free(moves);
+}
+
 static void test_killer_ordering(void)
 {
     struct MoveHints hints;
@@ -742,15 +777,24 @@ static void test_killer_search(void)
     clear_move_hints(&hints);
     preferred = legal_move_named(position, "h8g8");
     remember_killer(&hints, 0, preferred);
-    hints.quiet_history[BLACK][preferred.from][preferred.to] = 100;
     stats.nodes = 0;
     success = negamax(&position, 0, 0, -600, -500, -1, NULL, NULL, &hints, &stats, &result);
     assert(success && result.score == -500);
     expect_move(result, "h8g7");
     expect_same_move(hints.killers[0][0], preferred);
     assert(hints.killers[0][1].from == -1);
+    /* Now quiet history breaks the tie, at normal depth and at the horizon.
+       Even a conflicting killer must not reverse this order in check. */
+    remember_killer(&hints, 0, legal_move_named(position, "h8g7"));
+    hints.quiet_history[BLACK][preferred.from][preferred.to] = 100;
+    success = negamax(&position, 0, 0, -600, -500, -1, NULL, NULL, &hints, &stats, &result);
+    assert(success && result.score == -500);
+    expect_move(result, "h8g8");
     assert(hints.quiet_history[BLACK][63][62] == 100); /* h8g8 */
     assert(hints.quiet_history[BLACK][63][54] == 0);   /* h8g7 */
+    success = negamax(&position, 1, 0, -600, -500, -1, NULL, NULL, &hints, &stats, &result);
+    assert(success && result.score == -500);
+    expect_move(result, "h8g8");
 
     /* Improving alpha alone is not a beta cutoff. */
     set_start_position(&position);
@@ -1245,6 +1289,7 @@ int main(void)
     test_deferred_captures();
     test_capture_history();
     test_quiescence_capture_history();
+    test_evasion_ordering();
     test_killer_ordering();
     test_killer_search();
     test_countermoves();

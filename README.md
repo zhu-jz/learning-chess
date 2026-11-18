@@ -2235,6 +2235,35 @@ example, our teaching values price knights and bishops equally, while
 the reference prices a bishop above a knight. The middle row separates
 the change of scoring rule from the effect of reading learned entries.
 
+## Lesson 39: which reply to check comes first?
+
+Put the white king on e1, a white bishop on b5, a black rook on e8, and
+the black king on h8. The rook gives check along the e-file. White has
+six legal replies: Bxe8 takes the checker, Be2 blocks the file, and the
+king can step to d1, f1, d2, or f2.
+
+The reference uses a separate ordering rule whenever the king is in
+check, including in quiescence. Our `order_evasions` starts from the
+same legal list as before. Captures come first, ranked by the reference
+price of the piece on the destination minus the attacker's type number
+(pawn 1 through king 6). En passant counts as a capture even though its
+destination is empty. A promotion that blocks check without taking a
+piece belongs with the non-captures.
+
+For a non-capturing reply we read its quiet-history entry. In the example,
+giving Be2 the highest quiet score orders the replies as **Bxe8, Be2,
+Kd1, Kf1, Kd2, Kf2**. The capture stays first and the tied king steps
+keep their generation order. The reference also consults history keyed
+by the preceding move; we do not yet have that table. Killers, countermoves,
+and SEE deferral do not reorder these escapes. As before, the previous
+iteration's preferred move can still go first at the root.
+
+Across 40 fixed-depth comparisons with lesson 38, every iteration kept
+its score and every final best move agreed. The defended-rook search
+at depth three still found `d1e1 h8g7 e1e6`, now in 1,299 nodes instead
+of 1,639. In the white promotion position the depth-three line continued
+with `h8g7` instead of `h8h7` after `e7e8q`; both searches took 159 nodes.
+
 ## Build and try it
 
 From the project root in PowerShell, using MSYS2 UCRT64 GCC:
