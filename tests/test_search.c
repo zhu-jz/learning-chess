@@ -770,10 +770,23 @@ static void test_history_penalties(void)
     update_quiet_history(&hints, WHITE, pawn, -1);
     assert(hints.quiet_history[WHITE][12][28] == -HISTORY_LIMIT);
     update_quiet_history(&hints, WHITE, pawn, 1);
-    assert(hints.quiet_history[WHITE][12][28] == -HISTORY_LIMIT + 1);
+    assert(hints.quiet_history[WHITE][12][28] == -HISTORY_LIMIT + 2);
     hints.quiet_history[WHITE][12][28] = HISTORY_LIMIT;
     update_quiet_history(&hints, WHITE, pawn, -1);
-    assert(hints.quiet_history[WHITE][12][28] == HISTORY_LIMIT - 1);
+    assert(hints.quiet_history[WHITE][12][28] == HISTORY_LIMIT - 2);
+
+    /* At half the limit, matching evidence adds half the usual credit.
+       Opposing evidence removes old credit and adds the new penalty. */
+    hints.quiet_history[WHITE][12][28] = 5000;
+    update_quiet_history(&hints, WHITE, pawn, 16);
+    assert(hints.quiet_history[WHITE][12][28] == 5008);
+    update_quiet_history(&hints, WHITE, pawn, -16);
+    assert(hints.quiet_history[WHITE][12][28] == 4984);
+    hints.quiet_history[WHITE][12][28] = -5000;
+    update_quiet_history(&hints, WHITE, pawn, -16);
+    assert(hints.quiet_history[WHITE][12][28] == -5008);
+    update_quiet_history(&hints, WHITE, pawn, 16);
+    assert(hints.quiet_history[WHITE][12][28] == -4984);
 
     /* Negative scores sort after untried zero-score moves, with stable ties. */
     clear_move_hints(&hints);

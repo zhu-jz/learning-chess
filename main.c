@@ -956,9 +956,11 @@ static void clear_move_hints(struct MoveHints *hints)
 
 static void update_quiet_history(struct MoveHints *hints, int color, struct Move move, int change)
 {
-    /* Changes are plus or minus depth squared, with depth at most
-       MAX_SEARCH_DEPTH. The addition fits in int even at either limit. */
-    int score = hints->quiet_history[color][move.from][move.to] + change;
+    int old_score = hints->quiet_history[color][move.from][move.to];
+    /* Each update forgets a fraction of the old score. The largest
+       product is 10000 * 16, so use long for the multiplication. */
+    int decay = (long)old_score * abs(change) / HISTORY_LIMIT;
+    int score = old_score - decay + change;
     if (score > HISTORY_LIMIT)
         score = HISTORY_LIMIT;
     if (score < -HISTORY_LIMIT)

@@ -1925,6 +1925,43 @@ with ordinary subtraction and a bounded score. Those remaining policies
 and exact reference parity are still later work. Earlier lesson examples
 retain their historical ordering and counts.
 
+## Lesson 30: damping quiet-move history
+
+Suppose a quiet move has earned 5,000 history points. Another cutoff at
+depth four gives it a reward of 16. How much weight should that reward
+have? We now let each new observation retire a fraction of the move's
+old score. Repeated successes then add progressively less credit, while
+a penalty can bring a once-promising move down the order sooner.
+
+The calculation in `update_quiet_history` uses the existing limit of
+10,000. For a change of either +16 or -16, it forgets 16/10,000 of the
+old score before applying the signed change.
+
+| Old score | Change | Signed amount forgotten | New score |
+| ---: | ---: | ---: | ---: |
+| 5,000 | +16 | 8 | 5,008 |
+| 5,000 | -16 | 8 | 4,976 |
+| -5,000 | +16 | -8 | -4,976 |
+| -5,000 | -16 | -8 | -5,008 |
+
+The sign of the amount forgotten comes from the old score. Subtracting
+that amount moves the old score toward zero. The sign of the change
+comes from the search outcome and determines the direction of the new
+evidence. Only the move receiving the reward or penalty gets updated.
+
+We multiply before dividing so that integer arithmetic keeps the useful
+part of the fraction. The product can reach 160,000, so the multiplication
+uses a C `long`. Division truncates toward zero. For example, with a
+change of magnitude 16, a score of 624 loses zero points to decay and a
+score of 625 loses one. The two bounds from lesson 29 still apply.
+
+The reference uses this same principle with a scaled table and tuned
+update sizes. Here the scale and depth-squared updates carry over from
+lesson 29 so the effect of damping can be studied on its own. All 40
+fixed-depth comparison runs produced identical UCI transcripts in these
+two lessons, including node counts. The focused C checks exercise larger
+positive and negative scores where the effect is visible.
+
 ## Build and try it
 
 From the project root in PowerShell, using MSYS2 UCRT64 GCC:
