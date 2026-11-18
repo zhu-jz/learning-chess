@@ -1169,6 +1169,27 @@ class UciTests(unittest.TestCase):
         self.send("quit\n")
         self.expect_exit()
 
+    def test_reference_exchange_threshold(self):
+        for name, board, ep, move, _, boundary in SEE_CASES:
+            with self.subTest(name=name):
+                self.send(f"position fen {board} w - {ep} 0 1\n")
+                self.send(f"see_test {move} {boundary}\n")
+                self.expect("info string see_test yes")
+                self.send(f"see_test {move} {boundary + 1}\n")
+                self.expect("info string see_test no")
+
+        self.send("position fen k2q4/8/8/8/3R4/4P3/8/7K b - - 0 1\n")
+        for threshold, answer in [(-2147483648, "yes"), (-1262, "yes"),
+                                  (-1261, "no"), (2147483647, "no")]:
+            self.send(f"see_test d8d4 {threshold}\n")
+            self.expect("info string see_test " + answer)
+        for args in ["", "d8d4", "d8d5 0", "d8d4 -", "d8d4 1x",
+                     "d8d4 0 extra", "d8d4 9999999999999999999999"]:
+            self.send("see_test " + args + "\n")
+            self.expect("info string Expected see_test followed by a legal capture and an integer threshold")
+        self.send("quit\n")
+        self.expect_exit()
+
     def test_negamax_start_position_nodes_ties_and_preservation(self):
         for depth, nodes in [(1, 21), (2, 83), (3, 612), (4, 2166), (1, 21)]:
             self.expect_search(depth, "cp", 0, "b1a3", nodes)

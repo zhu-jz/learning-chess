@@ -13,4 +13,6 @@ SEE_CASES = [
     ("en passant wins pawn", "7k/8/8/3pP3/8/8/K7/8", "d6", "e5d6", 100, 0),
     ("capture and promote", "1r5k/P7/8/8/8/8/8/K7", "-", "a7b8n", 700, 0),
     ("reply promotes", "7k/8/8/8/R7/8/1p5K/n7", "-", "a4a1", -1000, -495),
+    ("king can recapture", "8/8/4k3/3r4/8/8/8/K2Q4", "-", "d1d5", -400, -1262),
+    ("king cannot recapture", "8/8/4k3/3r4/2P5/8/8/K2Q4", "-", "d1d5", 500, 1276),
 ]

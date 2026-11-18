@@ -2094,6 +2094,41 @@ next integer as thresholds, then checks both sides of the expected
 reference boundary. These are SEE checks only; search still follows
 lesson 32's capture order.
 
+## Lesson 35: does the exchange reach a given value?
+
+The new diagnostic `see_test <capture> <threshold>` answers yes or no
+using the reference's exchange prices. Try the defended rook from lesson 34:
+
+```text
+position fen 7k/8/4p3/3r4/8/8/8/K2Q4 w - - 0 1
+see_test d1d5 -1262
+info string see_test yes
+see_test d1d5 -1261
+info string see_test no
+```
+
+White takes a rook worth 1,276. Even losing the queen leaves White with
+1,276 − 2,538 = −1,262, so the first question has an immediate answer.
+For the second, Black needs to recover **2,538** to make White fall short:
+recovering only 2,537 would leave White exactly at −1,261. The pawn on
+e6 can take the queen, and White has no recapture. This is why the
+calculation asks for one more than the margin when it switches sides.
+
+`exchange_reaches` keeps the square being fought over empty on a copy
+of the board. The price of the piece on offer is kept in a variable.
+Removing each attacker from its old square reveals any sliding piece
+behind it. The cheapest available attacker goes first, and a king can
+recapture only when the square is undefended. For pins we follow the
+reference's rule: while any original enemy pinner remains, skip this
+side's originally pinned attackers. Initial en passant captures and
+capture-promotions use a boundary of zero. A pawn recapturing on its
+last rank keeps its pawn price in this calculation.
+
+Run lesson 34's comparison script to check both C commands. It now also
+includes a king that can take an undefended queen and a king kept away by
+a pawn. The ordinary UCI tests check the expected boundaries without
+requiring the Python reference. Search still uses lesson 32's ordering.
+
 ## Build and try it
 
 From the project root in PowerShell, using MSYS2 UCRT64 GCC:

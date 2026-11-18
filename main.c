@@ -1,4 +1,5 @@
 #include <ctype.h>
+#include <errno.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -992,6 +993,144 @@ static void read_see_command(const struct Position *position)
     printf("info string see cp %d\n", static_exchange(position, move));
 }
 
+/* Exchange prices in the reference's units. A king is tried last as a
+   recapturer, but has no material price. enum Piece lists each color in
+   pawn, knight, bishop, rook, queen, king order. */
+static int exchange_price(int piece)
+{
+    static const int prices[] = { 0, 208, 781, 825, 1276, 2538, 0 };
+    if (piece >= BLACK_PAWN)
+        piece -= BLACK_PAWN - WHITE_PAWN;
+    return prices[piece];
+}
+
+struct ExchangePins {
+    int pinned[64];
+    int pinner[64];
+};
+
+/* The reference remembers pins from the starting board. Along a ray,
+   enemy sliding pieces aimed at the king are potential pinners. Look
+   through them: two rooks can pin the same piece from the same file. */
+static void find_exchange_pins(const struct Position *position, int side,
+                               struct ExchangePins *pins)
+{
+    int king = find_king(position, side);
+    for (int dx = -1; dx <= 1; dx++) {
+        for (int dy = -1; dy <= 1; dy++) {
+            if (dx == 0 && dy == 0)
+                continue;
+            int blocker = -1;
+            int x = king % 8 + dx;
+            int y = king / 8 + dy;
+            while (x >= 0 && x < 8 && y >= 0 && y < 8) {
+                int square = y * 8 + x;
+                int piece = position->board[square];
+                int straight = dx == 0 || dy == 0;
+                int slider = piece == WHITE_QUEEN || piece == BLACK_QUEEN
+                    || (straight && (piece == WHITE_ROOK || piece == BLACK_ROOK))
+                    || (!straight && (piece == WHITE_BISHOP || piece == BLACK_BISHOP));
+                if (piece_color(piece) == 1 - side && slider) {
+                    if (blocker != -1) {
+                        pins->pinned[blocker] = 1;
+                        pins->pinner[square] = 1;
+                    }
+                } else if (piece != EMPTY) {
+                    if (piece_color(piece) != side || blocker != -1)
+                        break;
+                    blocker = square;
+                }
+                x += dx;
+                y += dy;
+            }
+        }
+    }
+}
+
+static int exchange_reply(const struct Position *remaining, const struct ExchangePins *pins,
+                          int target, int side)
+{
+    /* While any original enemy pinner remains, the reference excludes
+       all originally pinned attackers of this side. */
+    int has_pinner = 0;
+    for (int s = 0; s < 64; s++) {
+        if (pins->pinner[s] && piece_color(remaining->board[s]) == 1 - side)
+            has_pinner = 1;
+    }
+    int best = -1;
+    for (int s = 0; s < 64; s++) {
+        int piece = remaining->board[s];
+        if (piece_color(piece) != side || (has_pinner && pins->pinned[s]))
+            continue;
+        /* Same-color piece codes already sort from pawn through king. */
+        if ((best == -1 || piece < remaining->board[best])
+            && piece_attacks_square(remaining, s, target))
+            best = s;
+    }
+    if (best != -1 && (remaining->board[best] == WHITE_KING || remaining->board[best] == BLACK_KING)
+        && is_square_attacked(remaining, target, 1 - side))
+        return -1;
+    return best;
+}
+
+/* The first capture is compulsory. A reply only matters if it can turn
+   a passing result into a failure, so equality on the first move counts. */
+static int exchange_reaches(const struct Position *position, struct Move move, int threshold)
+{
+    if (move.promotion != EMPTY || move.en_passant_capture_square != -1 || move.rook_from != -1)
+        return threshold <= 0;
+    int gain = exchange_price(position->board[move.to]);
+    int price = exchange_price(position->board[move.from]);
+    if (gain < threshold)
+        return 0;
+    if (gain - price >= threshold)
+        return 1;
+
+    struct ExchangePins pins = { { 0 }, { 0 } };
+    find_exchange_pins(position, WHITE, &pins);
+    find_exchange_pins(position, BLACK, &pins);
+    struct Position remaining = *position;
+    remaining.board[move.from] = EMPTY;
+    remaining.board[move.to] = EMPTY;
+    int side = 1 - position->side_to_move;
+    int needed = gain - threshold + 1;
+    for (;;) {
+        int from = exchange_reply(&remaining, &pins, move.to, side);
+        if (from == -1)
+            return side != position->side_to_move;
+        gain = price;
+        price = exchange_price(remaining.board[from]);
+        if (gain - price >= needed)
+            return side == position->side_to_move;
+        /* This side can meet its goal unless the other side takes back
+           at least one more than the margin. Reveal any attacker behind it. */
+        needed = gain - needed + 1;
+        remaining.board[from] = EMPTY;
+        side = 1 - side;
+    }
+}
+
+static void read_see_test_command(const struct Position *position)
+{
+    char *text = strtok(NULL, " \t\r");
+    char *number = strtok(NULL, " \t\r");
+    struct Move move;
+    if (number != NULL && strtok(NULL, " \t\r") == NULL
+        && find_legal_move(position, text, &move)
+        && (position->board[move.to] != EMPTY || move.en_passant_capture_square != -1)) {
+        char *end;
+        errno = 0;
+        long threshold = strtol(number, &end, 10);
+        if (end != number && *end == '\0' && errno != ERANGE
+            && threshold >= INT_MIN && threshold <= INT_MAX) {
+            printf("info string see_test %s\n", exchange_reaches(position, move, (int)threshold)
+                ? "yes" : "no");
+            return;
+        }
+    }
+    puts("info string Expected see_test followed by a legal capture and an integer threshold");
+}
+
 static int has_higher_priority(const struct Position *position, struct Move a, struct Move b)
 {
     int gain_a = move_priority(position, a);
@@ -1603,6 +1742,8 @@ int main(void)
             read_eval_command(&position);
         } else if (strcmp(command, "see") == 0) {
             read_see_command(&position);
+        } else if (strcmp(command, "see_test") == 0) {
+            read_see_test_command(&position);
         } else if (strcmp(command, "go") == 0) {
             read_go_command(&position, &history);
         } else if (strcmp(command, "quit") == 0) {
