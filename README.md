@@ -2056,6 +2056,44 @@ player leaves the exchange to answer a check. The reference's
 separately. Our command returns a number so we can check it by hand.
 Search does not call it yet.
 
+## Lesson 34: finding the reference's SEE boundary
+
+After Qxd5 exd5 in lesson 33, White has traded a queen for a rook. Our
+`see d1d5` prints −400: 500 for the rook minus 900 for the queen. The
+reference's `see_test` takes a threshold and answers yes or no. Does it
+accept −400 and reject −399? It rejects both. Its rook is worth 1,276 and
+its queen 2,538. It accepts **−1,262** and rejects **−1,261**. The two
+engines agree on the trade and price it differently.
+
+| Exchange | Teaching score | Highest passing reference threshold |
+| --- | ---: | ---: |
+| Queen takes undefended rook | 500 | 1,276 |
+| Queen takes rook, pawn recaptures | −400 | −1,262 |
+| Pawn takes rook, opposing queen declines to recapture | 500 | 1,276 |
+| En passant wins a pawn outright | 100 | 0 |
+| Pawn takes rook and promotes to knight | 700 | 0 |
+| Rook takes knight, opposing pawn recaptures and promotes | −1,000 | −495 |
+
+The last three rows show where changing piece values alone would fail.
+For an initial en passant capture or promotion, the reference checks
+whether zero reaches the threshold. For the last row, the first move is
+an ordinary capture. The reference counts the knight taken and the rook
+lost (781 − 1,276), with no promotion bonus for the recapturing pawn.
+The teaching calculation includes that bonus.
+
+With the November 5 reference folder in the project root and the C engine
+built, run this optional comparison:
+
+```powershell
+.\.venv\Scripts\python.exe -B tests\compare_see.py build\learning-chess.exe
+```
+
+The script sends each of ten positions to the C engine, then calls the
+reference function on the same move. It checks the teaching score and the
+next integer as thresholds, then checks both sides of the expected
+reference boundary. These are SEE checks only; search still follows
+lesson 32's capture order.
+
 ## Build and try it
 
 From the project root in PowerShell, using MSYS2 UCRT64 GCC:
