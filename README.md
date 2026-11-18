@@ -2129,6 +2129,41 @@ includes a king that can take an undefended queen and a king kept away by
 a pawn. The ordinary UCI tests check the expected boundaries without
 requiring the Python reference. Search still uses lesson 32's ordering.
 
+## Lesson 36: try a quiet move before giving up a queen
+
+In the defended-rook position from lesson 35, White can play Qxd5 exd5.
+The rook is worth 1,276 and the queen 2,538, so SEE puts this exchange
+at −1,262. Should White try it before a quiet move like Qb1?
+
+Normal search now gives each capture a loss allowance: multiply the
+victim's reference price by seven and divide by sixteen, rounding down.
+For the rook the allowance is 558. Qxd5 fails the −558 threshold, so
+White tries Qb1 earlier and keeps Qxd5 for later. A small loss can still
+pass: trading a bishop (825) for a knight (781) costs only 44, within
+the knight's allowance of 341. This formula uses the victim part of the
+reference's capture score; we do not yet keep its capture-history term.
+
+After ordering the captures and quiet moves, `defer_losing_captures`
+walks the list once. Each passing capture, non-capturing promotion, or
+quiet move goes immediately before the captures deferred so far. The
+relative order within each group stays intact. A deferred capture is
+still searched if the earlier moves do not produce a cutoff. The
+previous iteration's preferred root move still has first choice.
+Quiescence and nodes where the king is in check keep their earlier order.
+
+Across 40 fixed-depth comparisons with lesson 35, every iteration kept
+its score and principal variation, and all final best moves agreed.
+Three searches changed their node counts, all at depth three:
+
+| Position | Lesson 35 | Lesson 36 |
+| --- | ---: | ---: |
+| Defended rook | 1,659 | 1,639 |
+| Castling fixture | 5,373 | 5,080 |
+| Opening after Bb5 and ...a6 | 1,234 | 1,366 |
+
+SEE judges a sequence of captures on one square. It cannot tell us
+which move will cause the earliest cutoff in the full search.
+
 ## Build and try it
 
 From the project root in PowerShell, using MSYS2 UCRT64 GCC:

@@ -16,6 +16,23 @@ static struct Position position_from_fen(char *pieces, char *side, char *en_pass
     return position;
 }
 
+static struct Move legal_move_named(struct Position position, const char *name)
+{
+    struct Move *moves = malloc(MAX_MOVES * sizeof(struct Move));
+    assert(moves != NULL);
+    int count = generate_moves(&position, moves);
+    struct Move result = { -1, -1, EMPTY, -1, -1, -1 };
+    for (int i = 0; i < count; i++) {
+        char text[6];
+        move_to_string(moves[i], text);
+        if (strcmp(text, name) == 0)
+            result = moves[i];
+    }
+    free(moves);
+    assert(result.from != -1);
+    return result;
+}
+
 static void expect_same_move(struct Move actual, struct Move expected)
 {
     assert(actual.from == expected.from && actual.to == expected.to);
@@ -273,10 +290,11 @@ static void test_principal_variation_search(void)
     struct SearchStats stats = { 0, 0 };
     struct SearchResult result;
 
-    /* Qxd5 is searched first and loses to exd5. Later, Qb1 beats that
+    struct Move preferred = legal_move_named(position, "d1d5");
+    /* A root hint puts Qxd5 first despite its loss to exd5. Later, Qb1 beats that
        score: its scout uses node 13, and its full re-search uses node 14. */
     int success = negamax(&position, 1, 0, -INFINITE_SCORE, INFINITE_SCORE,
-                          -1, NULL, &history, NULL, &stats, &result);
+                          -1, &preferred, &history, NULL, &stats, &result);
     assert(success && result.score == 300 && stats.nodes == 38);
     expect_move(result, "d1b1");
     check_pv(position, result, 0);
@@ -289,7 +307,7 @@ static void test_principal_variation_search(void)
     stats.nodes = 0;
     stats.selective_depth = 0;
     success = negamax(&position, 1, 0, -INFINITE_SCORE, 200,
-                      -1, NULL, &history, NULL, &stats, &result);
+                      -1, &preferred, &history, NULL, &stats, &result);
     assert(success && result.score >= 200 && stats.nodes == 13);
     expect_move(result, "d1b1");
     assert(history.count == 1);
@@ -299,7 +317,7 @@ static void test_principal_variation_search(void)
     stats.nodes = 0;
     stats.selective_depth = 0;
     success = negamax(&position, 1, 0, 300, 301,
-                      -1, NULL, &history, NULL, &stats, &result);
+                      -1, &preferred, &history, NULL, &stats, &result);
     assert(success && result.score <= 300 && stats.nodes == 31);
     assert(history.count == 1);
 
@@ -309,7 +327,7 @@ static void test_principal_variation_search(void)
         stats.nodes = ULLONG_MAX - allowed;
         stats.selective_depth = 0;
         success = negamax(&position, 1, 0, -INFINITE_SCORE, INFINITE_SCORE,
-                          -1, NULL, &history, NULL, &stats, &result);
+                          -1, &preferred, &history, NULL, &stats, &result);
         assert(!success && stats.nodes == ULLONG_MAX && history.count == 1);
         assert(same_repetition_position(&position, &history.positions[0]));
     }
@@ -458,23 +476,6 @@ static void test_mate_distance_pruning(void)
     assert(success && result.score == 0 && stats.nodes == 1 && result.pv_length == 0);
 }
 
-static struct Move legal_move_named(struct Position position, const char *name)
-{
-    struct Move *moves = malloc(MAX_MOVES * sizeof(struct Move));
-    assert(moves != NULL);
-    int count = generate_moves(&position, moves);
-    struct Move result = { -1, -1, EMPTY, -1, -1, -1 };
-    for (int i = 0; i < count; i++) {
-        char text[6];
-        move_to_string(moves[i], text);
-        if (strcmp(text, name) == 0)
-            result = moves[i];
-    }
-    free(moves);
-    assert(result.from != -1);
-    return result;
-}
-
 static void test_capture_ordering(void)
 {
     /* All three can take the same rook. Even a legal king capture is
@@ -497,6 +498,32 @@ static void test_capture_ordering(void)
     moves[1] = pawn;
     order_moves(&position, moves, 2);
     expect_same_move(moves[0], pawn);
+}
+
+static void test_deferred_captures(void)
+{
+    struct Position position = position_from_fen("7k/8/4p1p1/3r3p/2P5/8/8/K2Q4", "w", "-");
+    struct Move pawn = legal_move_named(position, "c4d5");
+    struct Move queen_rook = legal_move_named(position, "d1d5");
+    struct Move queen_pawn = legal_move_named(position, "d1h5");
+    struct Move king_step = legal_move_named(position, "a1b1");
+    struct Move queen_step = legal_move_named(position, "d1b1");
+    struct Move moves[] = { pawn, queen_rook, queen_pawn, king_step, queen_step };
+    defer_losing_captures(&position, moves, 5);
+    expect_same_move(moves[0], pawn);
+    expect_same_move(moves[1], king_step);
+    expect_same_move(moves[2], queen_step);
+    expect_same_move(moves[3], queen_rook);
+    expect_same_move(moves[4], queen_pawn);
+
+    /* Bxd5 exd5 costs 44 reference units. Taking a knight allows a loss
+       of up to 341, so this capture stays ahead of the quiet move. */
+    position = position_from_fen("7k/8/4p3/3n4/2B5/8/8/K7", "w", "-");
+    struct Move bishop = legal_move_named(position, "c4d5");
+    moves[0] = bishop;
+    moves[1] = legal_move_named(position, "a1b1");
+    defer_losing_captures(&position, moves, 2);
+    expect_same_move(moves[0], bishop);
 }
 
 static void test_killer_ordering(void)
@@ -869,14 +896,15 @@ static void test_history_penalties(void)
     clear_move_hints(&hints);
     expect_empty_quiet_history(&hints);
 
-    /* Qxd5 fails first, then three quiet king moves fail. Qb1 cuts off.
+    /* Force Qxd5 first with a root hint. It fails, then three quiet king moves fail. Qb1 cuts off.
        Only those three quiet alternatives lose credit; later moves and
        the earlier capture keep zero, as does the other color's table. */
     position = position_from_fen("7k/8/4p3/3r4/8/8/8/K2Q4", "w", "-");
+    struct Move preferred = legal_move_named(position, "d1d5");
     struct SearchStats stats = { 0, 0 };
     struct SearchResult result;
     int success = negamax(&position, 1, 0, -INFINITE_SCORE, 200,
-                          -1, NULL, NULL, &hints, &stats, &result);
+                          -1, &preferred, NULL, &hints, &stats, &result);
     assert(success && result.score == 300 && stats.nodes == 13);
     expect_move(result, "d1b1");
     for (int color = 0; color < 2; color++) {
@@ -896,7 +924,7 @@ static void test_history_penalties(void)
     clear_move_hints(&hints);
     stats.nodes = 0;
     success = negamax(&position, 1, 0, -INFINITE_SCORE, INFINITE_SCORE,
-                      -1, NULL, NULL, &hints, &stats, &result);
+                      -1, &preferred, NULL, &hints, &stats, &result);
     assert(success && result.score == 300);
     expect_empty_quiet_history(&hints);
 
@@ -905,7 +933,7 @@ static void test_history_penalties(void)
     clear_move_hints(&hints);
     stats.nodes = 0;
     success = negamax(&position, 2, 0, -INFINITE_SCORE, 200,
-                      -1, NULL, NULL, &hints, &stats, &result);
+                      -1, &preferred, NULL, &hints, &stats, &result);
     assert(success && result.score == 300);
     expect_move(result, "d1b1");
     assert(hints.quiet_history[WHITE][0][1] == -4);
@@ -924,7 +952,7 @@ static void test_history_penalties(void)
         clear_move_hints(&hints);
         stats.nodes = ULLONG_MAX - allowed;
         success = negamax(&position, 1, 0, -INFINITE_SCORE, 301,
-                          -1, NULL, &history, &hints, &stats, &result);
+                          -1, &preferred, &history, &hints, &stats, &result);
         assert(!success && history.count == 1);
         expect_empty_quiet_history(&hints);
     }
@@ -1129,6 +1157,7 @@ int main(void)
     test_aspiration_windows();
     test_mate_distance_pruning();
     test_capture_ordering();
+    test_deferred_captures();
     test_killer_ordering();
     test_killer_search();
     test_countermoves();

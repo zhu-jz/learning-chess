@@ -1170,6 +1170,30 @@ static int is_quiet_move(const struct Position *position, struct Move move)
         && move.en_passant_capture_square == -1 && move.promotion == EMPTY;
 }
 
+/* Insert each early move just before the deferred captures seen so far.
+   Both groups keep their order, and no move is removed from the list. */
+static void defer_losing_captures(const struct Position *position, struct Move moves[], int count)
+{
+    int early_count = 0;
+    for (int i = 0; i < count; i++) {
+        struct Move move = moves[i];
+        int victim = position->board[move.to];
+        if (victim != EMPTY || move.en_passant_capture_square != -1) {
+            /* The reference also adds capture history to this numerator.
+               With no capture history yet, only the victim price contributes. */
+            int allowance = 7 * exchange_price(victim) / 16;
+            if (!exchange_reaches(position, move, -allowance))
+                continue;
+        }
+        if (early_count != i) {
+            for (int j = i; j > early_count; j--)
+                moves[j] = moves[j - 1];
+            moves[early_count] = move;
+        }
+        early_count++;
+    }
+}
+
 static void clear_move_hints(struct MoveHints *hints)
 {
     struct Move empty = { -1, -1, EMPTY, -1, -1, -1 };
@@ -1361,6 +1385,8 @@ static int negamax(const struct Position *position, int depth, int ply,
         order_quiet_history(position, moves, count, hints);
         order_quiet_replies(position, moves, count, hints->killers[ply], countermove);
     }
+    if (depth > 0 && !in_check)
+        defer_losing_captures(position, moves, count);
     search_move_first(moves, count, preferred);
     for (int i = 0; i < count; i++) {
         /* In check we must search every evasion, including quiet moves.
