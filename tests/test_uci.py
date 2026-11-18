@@ -1152,6 +1152,39 @@ class UciTests(unittest.TestCase):
         self.send("quit\n")
         self.expect_exit()
 
+    def test_static_exchange(self):
+        fixtures = [
+            # Qxd5 wins an undefended rook. Add a pawn on e6 and White loses the queen.
+            ("7k/8/8/3r4/8/8/8/K2Q4", "-", "d1d5", 500),
+            ("7k/8/4p3/3r4/8/8/8/K2Q4", "-", "d1d5", -400),
+            # After cxd5, ...Qxd5 would lose the queen to the rook on d1.
+            ("3q3k/8/8/3r4/2P5/8/8/K2R4", "-", "c4d5", 500),
+            # Qxd5 clears the d-file. After ...exd5 White now has Rxd5.
+            ("7k/8/4p3/3r4/8/3Q4/8/K2R4", "-", "d3d5", -300),
+            # Both the queen and pawn can reply. ...exd5 leaves the queen
+            # defending d5, so White declines Bxd5 and loses 400 overall.
+            ("6k1/8/4p3/3r4/2Bq4/8/K7/7Q", "-", "h1d5", -400),
+            # The e6 pawn is pinned to its king.
+            ("4k3/8/4p3/3r4/8/8/8/K2QR3", "-", "d1d5", 500),
+            # Removing the en passant victim uncovers the rook on d1.
+            ("7k/8/8/3pP3/8/8/K7/3r4", "d6", "e5d6", 0),
+            # Respect the first move's underpromotion. A later pawn recapture queens.
+            ("1r5k/P7/8/8/8/8/8/K7", "-", "a7b8n", 700),
+            ("7k/8/8/8/R7/8/1p5K/n7", "-", "a4a1", -1000),
+        ]
+        for board, ep, move, score in fixtures:
+            with self.subTest(board=board):
+                self.send(f"position fen {board} w - {ep} 0 1\n")
+                for _ in range(2):
+                    self.send(f"see {move}\n")
+                    self.expect(f"info string see cp {score}")
+        self.send("position startpos\n")
+        for command in ["see", "see e2e4", "see e2e5", "see e2e4 extra"]:
+            self.send(command + "\n")
+            self.expect("info string Expected see followed by one legal capture")
+        self.send("quit\n")
+        self.expect_exit()
+
     def test_negamax_start_position_nodes_ties_and_preservation(self):
         for depth, nodes in [(1, 21), (2, 83), (3, 612), (4, 2166), (1, 21)]:
             self.expect_search(depth, "cp", 0, "b1a3", nodes)

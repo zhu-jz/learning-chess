@@ -2024,6 +2024,38 @@ Across the 40 existing fixed-depth comparisons with lesson 31, all scores,
 principal variations, and best moves stayed the same. In the castling
 fixture at depth three, the node count fell from 5,695 to 5,373.
 
+## Lesson 33: when should you stop recapturing?
+
+The teaching command `see <capture>` estimates a legal capture's material
+gain in centipawns, from the moving side's point of view. Try these three
+positions. In each, White takes the rook on d5.
+
+| Position after `position fen` | Command | Score | Why |
+| --- | --- | ---: | --- |
+| `7k/8/8/3r4/8/8/8/K2Q4 w - - 0 1` | `see d1d5` | +500 | No black piece can recapture. |
+| `7k/8/4p3/3r4/8/8/8/K2Q4 w - - 0 1` | `see d1d5` | −400 | After Qxd5 exd5, White has gained a rook (500) and lost a queen (900). |
+| `3q3k/8/8/3r4/2P5/8/8/K2R4 w - - 0 1` | `see c4d5` | +500 | Black can play Qxd5 for a pawn, but White would answer Rxd5. Black declines. |
+
+`static_exchange` plays the given capture on a copy of the board. It
+looks for the cheapest legal recapture on the same square and asks the
+same question from the opponent's side. If that reply gains material,
+subtract the gain. If it loses material, the opponent can stop, so
+subtract nothing. Only the first capture is compulsory. Each capture
+removes a piece, so the calculation ends without a depth limit.
+
+Scanning the new board after each capture reveals sliding pieces that
+were blocked before. Checking king safety excludes pinned recaptures
+that expose the king. Equal-value attackers keep board scan order. The
+first capture uses the player's chosen promotion; a hypothetical pawn
+recapturing on its last rank becomes a queen.
+
+This is a material estimate for one square. It considers one attacker
+per turn and ignores threats elsewhere, including what happens if a
+player leaves the exchange to answer a check. The reference's
+`see_test` answers a threshold question and treats special moves
+separately. Our command returns a number so we can check it by hand.
+Search does not call it yet.
+
 ## Build and try it
 
 From the project root in PowerShell, using MSYS2 UCRT64 GCC:

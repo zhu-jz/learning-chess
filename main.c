@@ -737,7 +737,7 @@ static void move_to_string(struct Move move, char text[6])
 
 /* Matching against generated moves also supplies promotion, rook, and en
    passant details, so the text parser does not need to reconstruct them. */
-static int play_uci_move(struct Position *position, const char *text)
+static int find_legal_move(const struct Position *position, const char *text, struct Move *move)
 {
     if (strlen(text) != 4 && strlen(text) != 5)
         return 0;
@@ -746,10 +746,18 @@ static int play_uci_move(struct Position *position, const char *text)
     for (int i = 0; i < count; i++) {
         char candidate[6];
         move_to_string(moves[i], candidate);
-        if (strcmp(text, candidate) == 0)
-            return apply_move(position, moves[i]);
+        if (strcmp(text, candidate) == 0) {
+            *move = moves[i];
+            return 1;
+        }
     }
     return 0;
+}
+
+static int play_uci_move(struct Position *position, const char *text)
+{
+    struct Move move;
+    return find_legal_move(position, text, &move) && apply_move(position, move);
 }
 
 static void read_moves_command(const struct Position *position)
@@ -921,6 +929,67 @@ static int attacker_value(int piece)
     if (piece == WHITE_KING || piece == BLACK_KING)
         return INFINITE_SCORE;
     return piece_value(piece);
+}
+
+/* Look again after each capture: moving a piece can uncover a rook or
+   bishop behind it. Scan order settles ties between equal-value attackers. */
+static int cheapest_recapture(const struct Position *position, int target, struct Move *reply)
+{
+    int found = 0;
+    int cheapest = 0;
+    for (int from = 0; from < 64; from++) {
+        int piece = position->board[from];
+        if (piece_color(piece) != position->side_to_move)
+            continue;
+        int value = attacker_value(piece);
+        if (found && value >= cheapest)
+            continue;
+        if (!piece_attacks_square(position, from, target))
+            continue;
+
+        struct Move move = { from, target, EMPTY, -1, -1, -1 };
+        if (piece == WHITE_PAWN && target / 8 == 7)
+            move.promotion = WHITE_QUEEN;
+        if (piece == BLACK_PAWN && target / 8 == 0)
+            move.promotion = BLACK_QUEEN;
+        if (move_keeps_king_safe(position, move)) {
+            *reply = move;
+            cheapest = value;
+            found = 1;
+        }
+    }
+    return found;
+}
+
+/* The caller commits to this legal capture. The opponent may decline
+   the reply. Every recursive call removes one more piece from the board. */
+static int static_exchange(const struct Position *position, struct Move move)
+{
+    int gain = move_priority(position, move);
+    struct Position next = *position;
+    move_pieces(&next, move);
+    next.side_to_move = 1 - position->side_to_move;
+
+    struct Move reply;
+    if (cheapest_recapture(&next, move.to, &reply)) {
+        int reply_gain = static_exchange(&next, reply);
+        if (reply_gain > 0)
+            gain -= reply_gain;
+    }
+    return gain;
+}
+
+static void read_see_command(const struct Position *position)
+{
+    char *text = strtok(NULL, " \t\r");
+    struct Move move;
+    if (text == NULL || strtok(NULL, " \t\r") != NULL
+        || !find_legal_move(position, text, &move)
+        || (position->board[move.to] == EMPTY && move.en_passant_capture_square == -1)) {
+        puts("info string Expected see followed by one legal capture");
+        return;
+    }
+    printf("info string see cp %d\n", static_exchange(position, move));
 }
 
 static int has_higher_priority(const struct Position *position, struct Move a, struct Move b)
@@ -1532,6 +1601,8 @@ int main(void)
             read_perft_command(&position);
         } else if (strcmp(command, "eval") == 0) {
             read_eval_command(&position);
+        } else if (strcmp(command, "see") == 0) {
+            read_see_command(&position);
         } else if (strcmp(command, "go") == 0) {
             read_go_command(&position, &history);
         } else if (strcmp(command, "quit") == 0) {
