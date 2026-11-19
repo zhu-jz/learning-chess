@@ -694,6 +694,35 @@ static void test_previous_move_evasions(void)
     assert(after_rook->score[BLACK_KING][kg8.to] == 0);
 }
 
+static void test_previous_move_quiets(void)
+{
+    struct Position start;
+    set_start_position(&start);
+    struct Move e4 = legal_move_named(start, "e2e4");
+    struct Move d4 = legal_move_named(start, "d2d4");
+    struct Position black = start;
+    assert(apply_move(&black, e4));
+    struct Move a6 = legal_move_named(black, "a7a6");
+    struct Move h6 = legal_move_named(black, "h7h6");
+
+    /* General history favors a6 by three points. Only after e4, two
+       reply points give h6 four points instead. No killer or countermove
+       is set, so the first equally good reply reveals the quiet ordering. */
+    struct Move first[] = { d4, e4 };
+    struct Move expected[] = { a6, h6 };
+    for (int i = 0; i < 2; i++) {
+        clear_move_hints(&hints);
+        hints.quiet_history[BLACK][a6.from][a6.to] = 3;
+        hints.continuation[WHITE_PAWN][e4.to].score[BLACK_PAWN][h6.to] = 2;
+        struct SearchStats stats = { 0, 0 };
+        struct SearchResult result;
+        assert(negamax(&start, 2, 0, -1, 0, -1, &first[i], NULL, &hints, &stats, &result));
+        assert(result.score == 0 && result.pv_length >= 2);
+        expect_same_move(result.pv[0], first[i]);
+        expect_same_move(result.pv[1], expected[i]);
+    }
+}
+
 static void test_killer_ordering(void)
 {
     clear_move_hints(&hints);
@@ -966,7 +995,7 @@ static void test_quiet_history(void)
     order_moves(&position, moves, count, NULL);
     for (int i = 0; i < count; i++)
         original[i] = moves[i];
-    order_quiet_history(&position, moves, count, &hints);
+    order_quiet_history(&position, moves, count, &hints, NULL);
     expect_same_move(moves[0], capture);
     expect_same_move(moves[1], best_quiet);
     expect_same_move(moves[2], tie_a);
@@ -988,7 +1017,7 @@ static void test_quiet_history(void)
     expect_same_move(moves[1], capture);
     expect_same_move(moves[2], tie_b);
     expect_same_move(moves[3], best_quiet);
-    order_quiet_history(&position, moves, 0, &hints);
+    order_quiet_history(&position, moves, 0, &hints, NULL);
     free(original);
     free(moves);
 
@@ -1059,7 +1088,7 @@ static void test_history_penalties(void)
     int count = generate_moves(&position, moves);
     assert(count == 20);
     order_moves(&position, moves, count, NULL);
-    order_quiet_history(&position, moves, count, &hints);
+    order_quiet_history(&position, moves, count, &hints, NULL);
     expect_same_move(moves[0], pawn);
     expect_same_move(moves[1], legal_move_named(position, "g1f3"));
     expect_same_move(moves[count - 2], a);
@@ -1334,6 +1363,7 @@ int main(void)
     test_quiescence_capture_history();
     test_evasion_ordering();
     test_previous_move_evasions();
+    test_previous_move_quiets();
     test_killer_ordering();
     test_killer_search();
     test_countermoves();

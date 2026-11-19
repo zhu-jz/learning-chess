@@ -2298,6 +2298,38 @@ fixed-depth comparisons with lesson 39, all UCI transcripts remained
 identical, including node counts. The two-check example isolates the
 ordering difference that those fixtures do not expose.
 
+## Lesson 41: remember quiet replies outside check
+
+Suppose Black usually tries ...a6 first, but ...h6 has worked well after
+White plays e4. Can the engine use that experience without preferring
+...h6 after every opening move?
+
+The focused test gives ...a6 three points in Black's general quiet
+history. It gives ...h6 two reply points in the row for a white pawn
+arriving on e4. At depth two, the engine tries:
+
+| White's move | Score for ordering ...a6 | Score for ordering ...h6 | First reply |
+| --- | ---: | ---: | --- |
+| d4 | 3 | 0 | ...a6 |
+| e4 | 3 | 4 | ...h6 |
+
+The reply points count twice. For these two terms, the reference uses
+weights of 128 for general history and 256 for the immediately preceding
+move. Their ratio is the same as for quiet escapes from check, so both
+paths now call `quiet_move_score`. With no preceding move at the root,
+only general history contributes. Equal scores keep their order. Killers,
+countermoves, and the preferred root move retain their earlier priority.
+
+These numbers rank moves; the search still evaluates both opening lines
+at zero. This lesson only reads the table learned in lesson 40. The
+reference also considers earlier moves and bonuses for escaping threats.
+
+All 40 fixed-depth comparisons against lesson 40 kept their scores,
+principal variations, and final best moves. Three searches changed node
+counts: the starting position at depth four went from 2,166 to 2,162,
+the defended rook at depth three from 1,299 to 1,263, and the white
+promotion at depth three from 159 to 165.
+
 ## Build and try it
 
 From the project root in PowerShell, using MSYS2 UCRT64 GCC:

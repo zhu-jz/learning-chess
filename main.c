@@ -1197,6 +1197,19 @@ static int same_move(struct Move a, struct Move b)
     return a.from == b.from && a.to == b.to && a.promotion == b.promotion;
 }
 
+/* For ordinary quiet moves and quiet escapes, the reference gives the
+   previous-move entry twice the weight of the general history entry. */
+static int quiet_move_score(const struct Position *position, struct Move move,
+                            const struct MoveHints *hints, const struct ReplyHistory *replies)
+{
+    if (hints == NULL)
+        return 0;
+    int score = hints->quiet_history[position->side_to_move][move.from][move.to];
+    if (replies != NULL)
+        score += 2 * replies->score[position->board[move.from]][move.to];
+    return score;
+}
+
 /* In check the reference scores a capture by the price on the destination
    minus the attacker's type (pawn 1 through king 6). Even en passant,
    whose destination is empty, must rank above the largest quiet score. */
@@ -1208,13 +1221,7 @@ static int evasion_score(const struct Position *position, struct Move move,
         int capture_base = HISTORY_LIMIT + 2 * 127 + WHITE_KING + 1;
         return capture_base + exchange_price(victim) - piece_type(position->board[move.from]);
     }
-    if (hints == NULL)
-        return 0;
-    int score = hints->quiet_history[position->side_to_move][move.from][move.to];
-    /* Reference weights are 64 and 128. Dividing both by 64 keeps the order. */
-    if (replies != NULL)
-        score += 2 * replies->score[position->board[move.from]][move.to];
-    return score;
+    return quiet_move_score(position, move, hints, replies);
 }
 
 /* Keep every legal escape, including blocks and non-capturing promotions. */
@@ -1379,18 +1386,17 @@ static void search_move_first(struct Move moves[], int count, const struct Move 
 /* Sort only the quiet suffix, after material ordering has separated it
    from captures and promotions. Equal history scores keep their order. */
 static void order_quiet_history(const struct Position *position, struct Move moves[], int count,
-                                const struct MoveHints *hints)
+                                const struct MoveHints *hints, const struct ReplyHistory *replies)
 {
     int first_quiet = 0;
     while (first_quiet < count && !is_quiet_move(position, moves[first_quiet]))
         first_quiet++;
-    int color = position->side_to_move;
     for (int i = first_quiet + 1; i < count; i++) {
         struct Move move = moves[i];
-        int score = hints->quiet_history[color][move.from][move.to];
+        int score = quiet_move_score(position, move, hints, replies);
         int j = i;
         while (j > first_quiet
-               && hints->quiet_history[color][moves[j - 1].from][moves[j - 1].to] < score) {
+               && quiet_move_score(position, moves[j - 1], hints, replies) < score) {
             moves[j] = moves[j - 1];
             j--;
         }
@@ -1513,7 +1519,7 @@ static int negamax(const struct Position *position, int depth, int ply,
         order_moves(position, moves, count, hints);
         if (depth > 0) {
             if (hints != NULL) {
-                order_quiet_history(position, moves, count, hints);
+                order_quiet_history(position, moves, count, hints, replies);
                 order_quiet_replies(position, moves, count, hints->killers[ply], countermove);
             }
             defer_losing_captures(position, moves, count, hints);
