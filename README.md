@@ -2403,6 +2403,59 @@ The opening position went from 1,376 to 1,225 nodes at depth three. The
 castling fixture went from 4,469 to 4,490 at depth two and from 9,176
 to 9,036 at depth three.
 
+## Lesson 44: what counts as one node?
+
+White has a king on a1. Black has a king on c2 and a pawn on h7. White
+cannot play Kb1 or Kb2 because the black king covers both squares. The
+only legal move is **Ka2**. Search it to depth one, first with the
+halfmove clock at 99, then from a fresh engine with the clock at zero.
+
+| Starting clock | C: UCI nodes | Reference: UCI nodes | Reference: final bench total |
+| ---: | ---: | ---: | ---: |
+| 99 | 2 | 1 | 2 |
+| 0 | 2 | 2 | 3 |
+
+**Clock 99 isolates the counting rule.** Ka2 brings the clock to 100.
+Both engines reach the same child and return a draw without trying a
+black move. Follow the counters through the depth-one report:
+
+| Event | C counter | Reference counter |
+| --- | ---: | ---: |
+| Enter the root search | 1 | 0 |
+| Play Ka2, before entering the child | 1 | 1 |
+| Enter the child at depth zero | 2 | 1 |
+| Return the draw and print the iteration | 2 | 1 |
+
+Our [negamax search](main.c) increments the counter on entry. The
+reference increments it in [do_move](minifish-reference-2026-11-05/position.py).
+Its depth-zero search hands the same position to quiescence, which adds
+nothing to the counter until it plays another move.
+
+**Clock zero shows why equal totals can mislead.** Our engine searches
+Ka2 once with a full window and reports −100 centipawns. The reference
+starts with a narrow window even at depth one. Its first score falls
+below that window. It plays Ka2 again in a wider search, reaches
+quiescence again, and reports −189 centipawns. Neither quiescence search
+plays a black move. Our two nodes are a root and a child; its two nodes
+are two applications of Ka2.
+
+The last column is a separate measurement. After printing the iteration,
+the reference [plays Ka2 once more](minifish-reference-2026-11-05/search.py)
+to look for a ponder reply in its transposition table. That increments
+the worker counter before the benchmark reads it. For fixed-depth UCI
+parity, compare the **nodes on the iteration's info line**.
+
+Run this comparison against the local reference with one worker:
+
+```powershell
+.\.venv\Scripts\python.exe -B tests\compare_nodes.py build\learning-chess.exe
+```
+
+This lesson leaves the C search unchanged. Simply subtracting one root
+from each report would fail the clock-zero example. Re-searches matter
+too: the C search counts another entry when it searches an already-made
+child again, while the reference charges a move only when it plays it.
+
 ## Build and try it
 
 From the project root in PowerShell, using MSYS2 UCRT64 GCC:
