@@ -2330,6 +2330,42 @@ counts: the starting position at depth four went from 2,166 to 2,162,
 the defended rook at depth three from 1,299 to 1,263, and the white
 promotion at depth three from 159 to 165.
 
+## Lesson 42: what did I play on my last turn?
+
+Suppose Black has just played ...a6. White can learn a general reply to
+that move, but it can also remember what worked after its *own* last
+move. In the lesson test, the ...a6 entry gives a3 one point and the e4
+entry gives h3 three. All other relevant entries start at zero.
+
+| First two plies | Ordering score for a3 | Ordering score for h3 | First quiet move tried |
+| --- | ---: | ---: | --- |
+| d4 a6 | 2 | 0 | a3 |
+| e4 a6 | 2 | 3 | h3 |
+
+The ordinary quiet score now adds three terms: general history, twice
+the entry for the opponent's last move, and once the entry for our own
+last move. These are ordering points. Both opening lines still score
+zero in the depth-three search.
+
+We already keep a row for each move along the current search path.
+At ply two, the row at index two belongs to Black's move and the row
+at index one to White's. At the root neither row is available. At ply
+one only the opponent's move is available. Check evasions still read
+only the immediate row; outside check the older row is used only at
+positive depth.
+
+Learning uses different weights from ordering. When a quiet best move
+raises alpha, we update the immediate row with 949/1024 of the change
+and the older row with 1003/1024. The same weights apply to penalties
+for tried quiet alternatives that failed to raise alpha. For example,
+with both rows initially zero and a bonus depth of four, a best move earns
++6 and +7 respectively; a failed alternative gets −11 and −12.
+
+The live reference agreed on both opening preferences and all four
+update values. All 40 fixed-depth transcripts matched lesson 41 exactly,
+including node counts. The focused test uses known table entries to show
+a difference those positions did not expose.
+
 ## Build and try it
 
 From the project root in PowerShell, using MSYS2 UCRT64 GCC:

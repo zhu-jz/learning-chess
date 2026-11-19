@@ -1200,13 +1200,16 @@ static int same_move(struct Move a, struct Move b)
 /* For ordinary quiet moves and quiet escapes, the reference gives the
    previous-move entry twice the weight of the general history entry. */
 static int quiet_move_score(const struct Position *position, struct Move move,
-                            const struct MoveHints *hints, const struct ReplyHistory *replies)
+                            const struct MoveHints *hints, const struct ReplyHistory *replies,
+                            const struct ReplyHistory *two_plies_back)
 {
     if (hints == NULL)
         return 0;
     int score = hints->quiet_history[position->side_to_move][move.from][move.to];
     if (replies != NULL)
         score += 2 * replies->score[position->board[move.from]][move.to];
+    if (two_plies_back != NULL)
+        score += two_plies_back->score[position->board[move.from]][move.to];
     return score;
 }
 
@@ -1221,7 +1224,7 @@ static int evasion_score(const struct Position *position, struct Move move,
         int capture_base = HISTORY_LIMIT + 2 * 127 + WHITE_KING + 1;
         return capture_base + exchange_price(victim) - piece_type(position->board[move.from]);
     }
-    return quiet_move_score(position, move, hints, replies);
+    return quiet_move_score(position, move, hints, replies, NULL);
 }
 
 /* Keep every legal escape, including blocks and non-capturing promotions. */
@@ -1337,7 +1340,6 @@ static void update_reply_history(struct ReplyHistory *replies, const struct Posi
 {
     int piece = position->board[move.from];
     int scaled = 128 * replies->score[piece][move.to];
-    change = change * 949 / 1024; /* Weight for the immediately preceding move. */
     int value = (scaled + change - scaled * abs(change) / 50000) / 128;
     if (value < -128)
         value = -128;
@@ -1346,15 +1348,26 @@ static void update_reply_history(struct ReplyHistory *replies, const struct Posi
     replies->score[piece][move.to] = (signed char)value;
 }
 
-static void record_quiet_reply(struct ReplyHistory *replies, const struct Position *position,
+/* Learning weights differ from ordering weights. Round each change toward
+   zero before passing it to the existing signed-byte history update. */
+static void teach_reply(struct ReplyHistory *replies, struct ReplyHistory *two_plies_back,
+                        const struct Position *position, struct Move move, int change)
+{
+    update_reply_history(replies, position, move, change * 949 / 1024);
+    if (two_plies_back != NULL)
+        update_reply_history(two_plies_back, position, move, change * 1003 / 1024);
+}
+
+static void record_quiet_reply(struct ReplyHistory *replies, struct ReplyHistory *two_plies_back,
+                               const struct Position *position,
                                int bonus_depth, struct Move best, struct Move failed[], int count)
 {
     int bonus = 388 * bonus_depth - 421;
     int malus = bonus_depth >= 5 ? 1580 : 416 * bonus_depth - 284;
-    update_reply_history(replies, position, best, bonus * 873 / 1024);
+    teach_reply(replies, two_plies_back, position, best, bonus * 873 / 1024);
     for (int i = 0; i < count; i++) {
         if (is_quiet_move(position, failed[i]))
-            update_reply_history(replies, position, failed[i], -malus * 1189 / 1024);
+            teach_reply(replies, two_plies_back, position, failed[i], -malus * 1189 / 1024);
     }
 }
 
@@ -1386,17 +1399,18 @@ static void search_move_first(struct Move moves[], int count, const struct Move 
 /* Sort only the quiet suffix, after material ordering has separated it
    from captures and promotions. Equal history scores keep their order. */
 static void order_quiet_history(const struct Position *position, struct Move moves[], int count,
-                                const struct MoveHints *hints, const struct ReplyHistory *replies)
+                                const struct MoveHints *hints, const struct ReplyHistory *replies,
+                                const struct ReplyHistory *two_plies_back)
 {
     int first_quiet = 0;
     while (first_quiet < count && !is_quiet_move(position, moves[first_quiet]))
         first_quiet++;
     for (int i = first_quiet + 1; i < count; i++) {
         struct Move move = moves[i];
-        int score = quiet_move_score(position, move, hints, replies);
+        int score = quiet_move_score(position, move, hints, replies, two_plies_back);
         int j = i;
         while (j > first_quiet
-               && quiet_move_score(position, moves[j - 1], hints, replies) < score) {
+               && quiet_move_score(position, moves[j - 1], hints, replies, two_plies_back) < score) {
             moves[j] = moves[j - 1];
             j--;
         }
@@ -1511,15 +1525,25 @@ static int negamax(const struct Position *position, int depth, int ply,
         countermove = &hints->countermove[piece][previous_to];
     }
     struct ReplyHistory *replies = NULL;
-    if (hints != NULL && previous_to >= 0)
-        replies = hints->replies_at_ply[ply];
+    struct ReplyHistory *two_plies_back = NULL;
+    if (hints != NULL) {
+        /* Each child inherits the row for the move that reached it.
+           A fresh path has no incoming move, even if the slot was used before. */
+        if (previous_to < 0)
+            hints->replies_at_ply[ply] = NULL;
+        else {
+            replies = hints->replies_at_ply[ply];
+            if (ply >= 2)
+                two_plies_back = hints->replies_at_ply[ply - 1];
+        }
+    }
     if (in_check) {
         order_evasions(position, moves, count, hints, replies);
     } else {
         order_moves(position, moves, count, hints);
         if (depth > 0) {
             if (hints != NULL) {
-                order_quiet_history(position, moves, count, hints, replies);
+                order_quiet_history(position, moves, count, hints, replies, two_plies_back);
                 order_quiet_replies(position, moves, count, hints->killers[ply], countermove);
             }
             defer_losing_captures(position, moves, count, hints);
@@ -1626,7 +1650,8 @@ static int negamax(const struct Position *position, int depth, int ply,
         record_capture_results(hints, position, depth, best, failed_moves, failed_count);
         if (replies != NULL && is_quiet_move(position, best)) {
             int bonus_depth = depth + (result->score > beta + 140);
-            record_quiet_reply(replies, position, bonus_depth, best, failed_moves, failed_count);
+            record_quiet_reply(replies, two_plies_back, position, bonus_depth, best,
+                               failed_moves, failed_count);
         }
     }
     free(moves);
