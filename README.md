@@ -2264,6 +2264,40 @@ at depth three still found `d1e1 h8g7 e1e6`, now in 1,299 nodes instead
 of 1,639. In the white promotion position the depth-three line continued
 with `h8g7` instead of `h8h7` after `e7e8q`; both searches took 159 nodes.
 
+## Lesson 40: which move gave check?
+
+White can reach the same position by two different checks. In the first
+case, a rook moves from g1 to h1 and checks the black king on h8. In the
+second, the rook is already on h1: a white knight moves from h2 to f3
+and opens the h-file. In both cases White ends up with Ka1, Rh1, Nf3.
+Black's only piece is its king, and both Kg7 and Kg8 are legal.
+
+Ordinary quiet history asks how well Kg8 worked in general. **Continuation
+history** asks how well it worked *after Rh1*. The previous mover and its
+destination select a row. Inside that row, the replying piece and its
+destination select an entry. The rook's row and the knight's row can
+therefore disagree even when the board and side to move are identical.
+
+In the focused test, normal search learns a value of +2 for Kg8 after
+Rh1. With the ordinary history scores tied, the search at the horizon
+then chooses **Kg8 after Rh1+**, but **Kg7 after Nf3+**: the knight's
+row is untouched, so generation order breaks the tie. Both lines still
+score +800 for White.
+
+For a non-capturing escape we add twice this entry to the ordinary quiet
+score. This preserves the reference's 128-to-64 weighting. Captures still
+come first. At the root there is no preceding search move, so every quiet
+escape gets the same neutral adjustment. Quiescence reads the row; normal
+search updates it when a quiet best move raises alpha. Quiet alternatives
+among the first 32 moves that failed to raise alpha receive a penalty.
+The reference scales and dampens these updates before storing each entry
+as a signed byte. The table is cleared for each new `go`.
+
+Only the immediately preceding move contributes here. Across the 40
+fixed-depth comparisons with lesson 39, all UCI transcripts remained
+identical, including node counts. The two-check example isolates the
+ordering difference that those fixtures do not expose.
+
 ## Build and try it
 
 From the project root in PowerShell, using MSYS2 UCRT64 GCC:

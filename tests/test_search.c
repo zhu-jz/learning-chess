@@ -7,6 +7,9 @@
 #undef main
 #include <assert.h>
 
+/* Tests reset the worker before each independent search experiment. */
+static struct MoveHints hints;
+
 static struct Position position_from_fen(char *pieces, char *side, char *en_passant)
 {
     char *fields[6] = { pieces, side, "-", en_passant, "0", "1" };
@@ -534,7 +537,6 @@ static void test_capture_history(void)
     struct Move pawn = legal_move_named(position, "c4d5");
     struct Move queen = legal_move_named(position, "d1d5");
     struct Move moves[] = { queen, pawn };
-    struct MoveHints hints;
     clear_move_hints(&hints);
     order_moves(&position, moves, 2, &hints);
     expect_same_move(moves[0], pawn);
@@ -581,7 +583,6 @@ static void test_quiescence_capture_history(void)
        rooks priced alike, generation order puts Qxd2 first. */
     struct Position position = position_from_fen("7k/8/8/8/3Q2r1/4p3/3r4/K7", "w", "-");
     struct Move winning = legal_move_named(position, "d4g4");
-    struct MoveHints hints;
     clear_move_hints(&hints);
     struct SearchStats stats = { 0, 0 };
     struct SearchResult result;
@@ -591,13 +592,14 @@ static void test_quiescence_capture_history(void)
     expect_same_move(result.pv[0], winning);
 
     update_capture_history(&hints, &position, winning, 290);
-    struct MoveHints before = hints;
+    int before[PIECE_COUNT][64][WHITE_KING + 1];
+    memcpy(before, hints.capture_history, sizeof(before));
     stats.nodes = 0;
     success = negamax(&position, 0, 0, -INFINITE_SCORE, 100, -1, NULL, NULL,
                       &hints, &stats, &result);
     assert(success && result.score == 300 && stats.nodes == 2);
     expect_same_move(result.pv[0], winning);
-    assert(memcmp(before.capture_history, hints.capture_history, sizeof(hints.capture_history)) == 0);
+    assert(memcmp(before, hints.capture_history, sizeof(hints.capture_history)) == 0);
 
     /* In check, a strongly remembered queen capture must not jump ahead
        of the pawn capture that removes the same checking rook. */
@@ -614,7 +616,6 @@ static void test_quiescence_capture_history(void)
 static void test_evasion_ordering(void)
 {
     struct Position position = position_from_fen("4r2k/8/8/1B6/8/8/8/4K3", "w", "-");
-    struct MoveHints hints;
     clear_move_hints(&hints);
     struct Move block = legal_move_named(position, "b5e2");
     hints.quiet_history[WHITE][block.from][block.to] = HISTORY_LIMIT;
@@ -622,7 +623,7 @@ static void test_evasion_ordering(void)
     assert(moves != NULL && is_in_check(&position, WHITE));
     int count = generate_moves(&position, moves);
     assert(count == 6);
-    order_evasions(&position, moves, count, &hints);
+    order_evasions(&position, moves, count, &hints, NULL);
     /* The bishop takes the checker or blocks it. All four king steps
        still follow in their original order, even though their scores tie. */
     const char *expected[] = { "b5e8", "b5e2", "e1d1", "e1f1", "e1d2", "e1f2" };
@@ -635,20 +636,66 @@ static void test_evasion_ordering(void)
     struct Move ep = legal_move_named(position, "e5d6");
     struct Move step = legal_move_named(position, "e4f4");
     hints.quiet_history[WHITE][step.from][step.to] = HISTORY_LIMIT;
-    assert(evasion_score(&position, ep, &hints) > evasion_score(&position, step, &hints));
+    assert(evasion_score(&position, ep, &hints, NULL) > evasion_score(&position, step, &hints, NULL));
     /* Promoting on d8 blocks the rook's check along the eighth rank.
        With no victim, choosing a queen adds no capture bonus. */
     position = position_from_fen("r6K/3P4/8/8/8/8/8/7k", "w", "-");
     block = legal_move_named(position, "d7d8q");
     step = legal_move_named(position, "h8g7");
     hints.quiet_history[WHITE][step.from][step.to] = 1;
-    assert(evasion_score(&position, block, &hints) < evasion_score(&position, step, &hints));
+    assert(evasion_score(&position, block, &hints, NULL) < evasion_score(&position, step, &hints, NULL));
     free(moves);
+}
+
+static void test_previous_move_evasions(void)
+{
+    /* Both checks lead to the same board: Rh1+ arrives on the file;
+       Nf3+ uncovers the rook already on h1. Black can play Kg7 or Kg8. */
+    struct Position rook = position_from_fen("7k/8/8/8/8/5N2/8/K5R1", "w", "-");
+    struct Position knight = position_from_fen("7k/8/8/8/8/8/7N/K6R", "w", "-");
+    struct Move rh1 = legal_move_named(rook, "g1h1");
+    struct Move nf3 = legal_move_named(knight, "h2f3");
+    struct Position checked = rook;
+    assert(apply_move(&checked, rh1));
+    struct Move kg7 = legal_move_named(checked, "h8g7");
+    struct Move kg8 = legal_move_named(checked, "h8g8");
+    struct SearchStats stats = { 0, 0 };
+    struct SearchResult result;
+    clear_move_hints(&hints);
+
+    /* Favor Kg8 in ordinary history for one training search. It beats
+       Black's beta of -1000 by 200, increasing the depth-one bonus. */
+    hints.quiet_history[BLACK][kg8.from][kg8.to] = 100;
+    assert(negamax(&rook, 2, 0, 1000, 1001, -1, &rh1, NULL, &hints, &stats, &result));
+    struct ReplyHistory *after_rook = &hints.continuation[WHITE_ROOK][rh1.to];
+    struct ReplyHistory *after_knight = &hints.continuation[WHITE_KNIGHT][nf3.to];
+    assert(after_rook->score[BLACK_KING][kg8.to] == 2);
+    assert(after_knight->score[BLACK_KING][kg8.to] == 0);
+
+    /* Tie the ordinary entries. Now only the preceding move distinguishes
+       the two quiescence nodes, and neither horizon search teaches a reply. */
+    hints.quiet_history[BLACK][kg8.from][kg8.to] = 0;
+    hints.quiet_history[BLACK][kg7.from][kg7.to] = 0;
+    assert(negamax(&rook, 1, 0, 799, 800, -1, &rh1, NULL, &hints, &stats, &result));
+    assert(result.score == 800 && result.pv_length >= 2);
+    expect_same_move(result.pv[1], kg8);
+    assert(negamax(&knight, 1, 0, 799, 800, -1, &nf3, NULL, &hints, &stats, &result));
+    assert(result.score == 800 && result.pv_length >= 2);
+    expect_same_move(result.pv[1], kg7);
+    assert(after_rook->score[BLACK_KING][kg8.to] == 2);
+    assert(after_knight->score[BLACK_KING][kg7.to] == 0);
+    /* If Kg7 had been tried and failed before Kg8 improved the score,
+       the same reference update gives Kg7 a penalty in this row alone. */
+    record_quiet_reply(after_knight, &checked, 2, kg8, &kg7, 1);
+    assert(after_knight->score[BLACK_KING][kg7.to] == -4);
+    assert(after_knight->score[BLACK_KING][kg8.to] == 2);
+    assert(after_rook->score[BLACK_KING][kg7.to] == 0);
+    clear_move_hints(&hints);
+    assert(after_rook->score[BLACK_KING][kg8.to] == 0);
 }
 
 static void test_killer_ordering(void)
 {
-    struct MoveHints hints;
     clear_move_hints(&hints);
     struct Position position;
     set_start_position(&position);
@@ -741,7 +788,6 @@ static void test_killer_search(void)
     struct Position position;
     set_start_position(&position);
     struct Move preferred = legal_move_named(position, "e2e4");
-    struct MoveHints hints;
     clear_move_hints(&hints);
     struct SearchStats stats = { 0, 0 };
     struct SearchResult result;
@@ -827,7 +873,6 @@ static void test_countermoves(void)
     int e4 = 28;
     struct Move reply = legal_move_named(position, "h7h5");
     struct Move alternative = legal_move_named(position, "a7a6");
-    struct MoveHints hints;
     clear_move_hints(&hints);
     struct SearchStats stats = { 0, 0 };
     struct SearchResult result;
@@ -857,7 +902,6 @@ static void test_countermoves(void)
 
 static void test_quiet_history(void)
 {
-    struct MoveHints hints;
     clear_move_hints(&hints);
     struct Position position;
     set_start_position(&position);
@@ -972,7 +1016,6 @@ static void expect_empty_quiet_history(const struct MoveHints *hints)
 
 static void test_history_penalties(void)
 {
-    struct MoveHints hints;
     clear_move_hints(&hints);
     struct Position position;
     set_start_position(&position);
@@ -1290,6 +1333,7 @@ int main(void)
     test_capture_history();
     test_quiescence_capture_history();
     test_evasion_ordering();
+    test_previous_move_evasions();
     test_killer_ordering();
     test_killer_search();
     test_countermoves();

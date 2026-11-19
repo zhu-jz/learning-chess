@@ -70,7 +70,14 @@ struct SearchStats {
     int selective_depth;      /* Deepest visited ply in this iteration. */
 };
 
+/* One row answers: after this particular move, which replies worked? */
+struct ReplyHistory {
+    signed char score[PIECE_COUNT][64]; /* Reply piece and destination. */
+};
+
 struct MoveHints {
+    struct ReplyHistory continuation[PIECE_COUNT][64]; /* Previous mover and destination. */
+    struct ReplyHistory *replies_at_ply[MAX_SEARCH_PLY + 1];
     struct Move killers[MAX_SEARCH_PLY][2]; /* Newest quiet cutoff first. */
     struct Move countermove[PIECE_COUNT][64]; /* Previous piece and destination. */
     int quiet_history[2][64][64]; /* Color, starting square, destination. */
@@ -1194,27 +1201,31 @@ static int same_move(struct Move a, struct Move b)
    minus the attacker's type (pawn 1 through king 6). Even en passant,
    whose destination is empty, must rank above the largest quiet score. */
 static int evasion_score(const struct Position *position, struct Move move,
-                         const struct MoveHints *hints)
+                         const struct MoveHints *hints, const struct ReplyHistory *replies)
 {
     int victim = position->board[move.to];
     if (victim != EMPTY || move.en_passant_capture_square != -1) {
-        int capture_base = HISTORY_LIMIT + WHITE_KING + 1;
+        int capture_base = HISTORY_LIMIT + 2 * 127 + WHITE_KING + 1;
         return capture_base + exchange_price(victim) - piece_type(position->board[move.from]);
     }
     if (hints == NULL)
         return 0;
-    return hints->quiet_history[position->side_to_move][move.from][move.to];
+    int score = hints->quiet_history[position->side_to_move][move.from][move.to];
+    /* Reference weights are 64 and 128. Dividing both by 64 keeps the order. */
+    if (replies != NULL)
+        score += 2 * replies->score[position->board[move.from]][move.to];
+    return score;
 }
 
 /* Keep every legal escape, including blocks and non-capturing promotions. */
 static void order_evasions(const struct Position *position, struct Move moves[], int count,
-                           const struct MoveHints *hints)
+                           const struct MoveHints *hints, const struct ReplyHistory *replies)
 {
     for (int i = 1; i < count; i++) {
         struct Move move = moves[i];
-        int score = evasion_score(position, move, hints);
+        int score = evasion_score(position, move, hints, replies);
         int j = i;
-        while (j > 0 && evasion_score(position, moves[j - 1], hints) < score) {
+        while (j > 0 && evasion_score(position, moves[j - 1], hints, replies) < score) {
             moves[j] = moves[j - 1];
             j--;
         }
@@ -1252,6 +1263,9 @@ static void defer_losing_captures(const struct Position *position, struct Move m
 
 static void clear_move_hints(struct MoveHints *hints)
 {
+    memset(hints->continuation, 0, sizeof(hints->continuation));
+    for (int ply = 0; ply <= MAX_SEARCH_PLY; ply++)
+        hints->replies_at_ply[ply] = NULL;
     struct Move empty = { -1, -1, EMPTY, -1, -1, -1 };
     for (int ply = 0; ply < MAX_SEARCH_PLY; ply++) {
         hints->killers[ply][0] = empty;
@@ -1305,8 +1319,36 @@ static void record_capture_results(struct MoveHints *hints, const struct Positio
         update_capture_history(hints, position, best, bonus);
     }
     int penalty = (416 * depth - 284) * 1040 / 1024;
-    for (int i = 0; i < count; i++)
-        update_capture_history(hints, position, failed[i], -penalty);
+    for (int i = 0; i < count; i++) {
+        if (!is_quiet_move(position, failed[i]))
+            update_capture_history(hints, position, failed[i], -penalty);
+    }
+}
+
+static void update_reply_history(struct ReplyHistory *replies, const struct Position *position,
+                                 struct Move move, int change)
+{
+    int piece = position->board[move.from];
+    int scaled = 128 * replies->score[piece][move.to];
+    change = change * 949 / 1024; /* Weight for the immediately preceding move. */
+    int value = (scaled + change - scaled * abs(change) / 50000) / 128;
+    if (value < -128)
+        value = -128;
+    if (value > 127)
+        value = 127;
+    replies->score[piece][move.to] = (signed char)value;
+}
+
+static void record_quiet_reply(struct ReplyHistory *replies, const struct Position *position,
+                               int bonus_depth, struct Move best, struct Move failed[], int count)
+{
+    int bonus = 388 * bonus_depth - 421;
+    int malus = bonus_depth >= 5 ? 1580 : 416 * bonus_depth - 284;
+    update_reply_history(replies, position, best, bonus * 873 / 1024);
+    for (int i = 0; i < count; i++) {
+        if (is_quiet_move(position, failed[i]))
+            update_reply_history(replies, position, failed[i], -malus * 1189 / 1024);
+    }
 }
 
 static void remember_killer(struct MoveHints *hints, int ply, struct Move move)
@@ -1462,8 +1504,11 @@ static int negamax(const struct Position *position, int depth, int ply,
         int piece = position->board[previous_to];
         countermove = &hints->countermove[piece][previous_to];
     }
+    struct ReplyHistory *replies = NULL;
+    if (hints != NULL && previous_to >= 0)
+        replies = hints->replies_at_ply[ply];
     if (in_check) {
-        order_evasions(position, moves, count, hints);
+        order_evasions(position, moves, count, hints, replies);
     } else {
         order_moves(position, moves, count, hints);
         if (depth > 0) {
@@ -1478,7 +1523,7 @@ static int negamax(const struct Position *position, int depth, int ply,
     int starting_alpha = alpha;
     /* Like the reference, learn from alternatives among the first 32 moves
        tried. An improving move is never added to the list of failures. */
-    struct Move failed_captures[32];
+    struct Move failed_moves[32];
     int failed_count = 0;
     for (int i = 0; i < count; i++) {
         /* In check we must search every evasion, including quiet moves.
@@ -1501,6 +1546,13 @@ static int negamax(const struct Position *position, int depth, int ply,
             history->count++;
         }
         /* Keep the same child and history entry for both searches. */
+        if (hints != NULL) {
+            int mover = position->board[moves[i].from]; /* A promoting pawn is still a pawn here. */
+            int to = moves[i].to;
+            if (moves[i].rook_from != -1)
+                to = moves[i].rook_from; /* Reference castles are encoded king-to-rook. */
+            hints->replies_at_ply[ply + 1] = &hints->continuation[mover][to];
+        }
         int success;
         if (depth > 0 && i > 0 && beta > alpha + 1) {
             /* Later moves first ask only whether they can beat alpha.
@@ -1539,8 +1591,8 @@ static int negamax(const struct Position *position, int depth, int ply,
         }
         if (score > alpha)
             alpha = score;
-        else if (depth > 0 && hints != NULL && i < 32 && !is_quiet_move(position, moves[i]))
-            failed_captures[failed_count++] = moves[i];
+        else if (depth > 0 && hints != NULL && i < 32)
+            failed_moves[failed_count++] = moves[i];
         /* The caller already has an alternative at least this good.
            Keep the score we found, but skip the remaining moves. */
         if (alpha >= beta) {
@@ -1563,8 +1615,14 @@ static int negamax(const struct Position *position, int depth, int ply,
     }
     /* A cutoff or a completed improvement supplies a best move. An upper
        bound alone does not. A failed child returned before reaching here. */
-    if (depth > 0 && hints != NULL && alpha > starting_alpha)
-        record_capture_results(hints, position, depth, result->pv[0], failed_captures, failed_count);
+    if (depth > 0 && hints != NULL && alpha > starting_alpha) {
+        struct Move best = result->pv[0];
+        record_capture_results(hints, position, depth, best, failed_moves, failed_count);
+        if (replies != NULL && is_quiet_move(position, best)) {
+            int bonus_depth = depth + (result->score > beta + 140);
+            record_quiet_reply(replies, position, bonus_depth, best, failed_moves, failed_count);
+        }
+    }
     free(moves);
     return 1;
 }
@@ -1665,7 +1723,7 @@ static void read_go_command(const struct Position *position, const struct Positi
     root.fullmove_number = 1;
     struct PositionHistory search_history = *history;
     prepare_repetition_history(&search_history);
-    struct MoveHints hints;
+    static struct MoveHints hints; /* One worker; keep its large tables off the call stack. */
     clear_move_hints(&hints);
     /* Count all work for this go command, including the shallower searches. */
     struct SearchStats stats;
