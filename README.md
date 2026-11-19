@@ -2366,6 +2366,43 @@ update values. All 40 fixed-depth transcripts matched lesson 41 exactly,
 including node counts. The focused test uses known table entries to show
 a difference those positions did not expose.
 
+## Lesson 43: which knight retreat escapes the pawns?
+
+Put a white knight on d4 and black pawns on e5 and a4. The e5 pawn
+attacks the knight. Nb3 gets away from that pawn but lands on a square
+attacked by the a4 pawn. Nf3 escapes both. With equal history scores,
+normal search now tries Nf3 before Nb3.
+
+Before sorting quiet moves, we scan the current board once. For each
+square we remember whether an enemy pawn, minor piece (knight or bishop),
+or rook attacks it, giving the cheaper attacker precedence. The table
+below shows when a move earns a bonus. Use the first matching bonus.
+
+| Moving piece | Attack on its starting square | Bonus for the destination |
+| --- | --- | --- |
+| Queen | Pawn, minor piece, or rook | 51,700 if none of those attack it; otherwise 14,450 if no pawn attacks it |
+| Rook | Pawn or minor piece | 25,600 if neither attacks it; otherwise 14,450 if no pawn attacks it |
+| Bishop or knight | Pawn | 14,450 if no pawn attacks it |
+
+All other moves get zero bonus. For ordinary quiet moves we multiply
+the history score from lesson 42 by 128 before adding the bonus, keeping
+the reference's units. Give Nb3 112 points of history: its 14,336 still
+loses to Nf3's 14,450. Give it 113 points and its 14,464 wins.
+Those are move-ordering scores, not material gains.
+
+The map uses the board *before* the move. For example, a rook on d1
+attacks an enemy queen on d5, but the queen blocks its view of d6.
+Qd6 gets the full bonus even though the rook could take it on d6.
+The reference does the same; the search still has to examine the reply.
+This rule applies outside check at positive depth. Captures, promotions,
+and check evasions keep their existing scoring rules.
+
+All 40 fixed-depth comparisons with lesson 42 kept the same scores,
+principal variations, and final best moves. Six node counts changed.
+The opening position went from 1,376 to 1,225 nodes at depth three. The
+castling fixture went from 4,469 to 4,490 at depth two and from 9,176
+to 9,036 at depth three.
+
 ## Build and try it
 
 From the project root in PowerShell, using MSYS2 UCRT64 GCC:

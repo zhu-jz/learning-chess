@@ -1214,9 +1214,9 @@ class UciTests(unittest.TestCase):
 
     def test_iterative_deepening_uses_the_deepest_result(self):
         self.send("position fen 7k/8/4p3/3r4/8/8/8/K2Q4 w - - 0 1\ngo depth 3\n")
-        self.expect("info depth 1 seldepth 4 score cp 300 nodes 38 pv d1b1", timeout=60)
-        self.expect("info depth 2 seldepth 4 score cp 300 nodes 137 pv d1b1 d5d2", timeout=60)
-        self.expect("info depth 3 seldepth 8 score cp 400 nodes 1263 pv d1e1 h8g7 e1e6", timeout=60)
+        self.expect("info depth 1 seldepth 4 score cp 300 nodes 31 pv d1b1", timeout=60)
+        self.expect("info depth 2 seldepth 4 score cp 300 nodes 130 pv d1b1 d5d2", timeout=60)
+        self.expect("info depth 3 seldepth 8 score cp 400 nodes 1235 pv d1e1 h8g7 e1e6", timeout=60)
         # Depths one and two choose d1b1; depth three finds d1e1. Its score
         # of 400 exceeds the initial beta of 350, so its nodes include a retry.
         self.expect("bestmove d1e1")
@@ -1248,10 +1248,10 @@ class UciTests(unittest.TestCase):
 
     def test_root_preference_resets_with_each_go(self):
         self.send("position fen 7k/8/4p3/3r4/8/8/8/K2Q4 w - - 0 1\n")
-        self.expect_search(3, "cp", 400, "d1e1", nodes=1263)
+        self.expect_search(3, "cp", 400, "d1e1", nodes=1235)
         # The previous go ended with d1e1, but depth one must start afresh.
-        self.expect_search(1, "cp", 300, "d1b1", nodes=38)
-        self.expect_search(3, "cp", 400, "d1e1", nodes=1263)
+        self.expect_search(1, "cp", 300, "d1b1", nodes=31)
+        self.expect_search(3, "cp", 400, "d1e1", nodes=1235)
         self.send("position startpos\n")
         self.expect_search(1, "cp", 0, "b1a3", nodes=21)
         self.expect_position(START_POSITION)
@@ -1282,7 +1282,7 @@ class UciTests(unittest.TestCase):
         # Populate different killer and history hints in a tactical search,
         # then return to startpos. Every iteration must match the fresh search.
         self.send("position fen 7k/8/4p3/3r4/8/8/8/K2Q4 w - - 0 1\n")
-        self.expect_search(3, "cp", 400, "d1e1", nodes=1263)
+        self.expect_search(3, "cp", 400, "d1e1", nodes=1235)
         self.send("position startpos\ngo depth 4\n")
         self.assertEqual([self.read_search_info(depth) for depth in range(1, 5)], first)
         self.expect("bestmove b1a3")
@@ -1405,7 +1405,7 @@ class UciTests(unittest.TestCase):
         self.expect_search(1, "cp", 100, "b5c6", nodes=39)
         self.expect_search(2, "cp", 100, "b5c6", nodes=181)
         self.send("position fen r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1\n")
-        self.expect_search(3, "cp", 0, "e2a6", nodes=9176)
+        self.expect_search(3, "cp", 0, "e2a6", nodes=9036)
         self.send("quit\n")
         self.expect_exit()
 
@@ -1422,7 +1422,7 @@ class UciTests(unittest.TestCase):
         self.send("position fen 7k/8/4p3/3r4/8/8/8/K2Q4 w - - 0 1\n")
         # Quiescence sees exd5 beyond the horizon and rejects Qxd5 already
         # at depth one, instead of stopping after the apparent rook gain.
-        self.expect_search(1, "cp", 300, "d1b1", nodes=38)
+        self.expect_search(1, "cp", 300, "d1b1", nodes=31)
         self.expect_search(2, "cp", 300, "d1b1")
         self.send("quit\n")
         self.expect_exit()

@@ -295,10 +295,10 @@ static void test_principal_variation_search(void)
 
     struct Move preferred = legal_move_named(position, "d1d5");
     /* A root hint puts Qxd5 first despite its loss to exd5. Later, Qb1 beats that
-       score: its scout uses node 13, and its full re-search uses node 14. */
+       score: its scout uses node 4, and its full re-search uses node 5. */
     int success = negamax(&position, 1, 0, -INFINITE_SCORE, INFINITE_SCORE,
                           -1, &preferred, &history, NULL, &stats, &result);
-    assert(success && result.score == 300 && stats.nodes == 38);
+    assert(success && result.score == 300 && stats.nodes == 32);
     expect_move(result, "d1b1");
     check_pv(position, result, 0);
     assert(history.count == 1);
@@ -306,12 +306,12 @@ static void test_principal_variation_search(void)
     assert(history.can_repeat[0] == 0);
 
     /* When the scout already reaches beta, its bound proves a cutoff.
-       There is no need to pay for node 14 or the remaining moves. */
+       There is no need to pay for node 5 or the remaining moves. */
     stats.nodes = 0;
     stats.selective_depth = 0;
     success = negamax(&position, 1, 0, -INFINITE_SCORE, 200,
                       -1, &preferred, &history, NULL, &stats, &result);
-    assert(success && result.score >= 200 && stats.nodes == 13);
+    assert(success && result.score >= 200 && stats.nodes == 4);
     expect_move(result, "d1b1");
     assert(history.count == 1);
 
@@ -324,9 +324,9 @@ static void test_principal_variation_search(void)
     assert(success && result.score <= 300 && stats.nodes == 31);
     assert(history.count == 1);
 
-    /* Refuse either the scout's node 13 or the full re-search's node 14.
+    /* Refuse either the scout's node 4 or the full re-search's node 5.
        Both error paths must remove the child from repetition history. */
-    for (int allowed = 12; allowed <= 13; allowed++) {
+    for (int allowed = 3; allowed <= 4; allowed++) {
         stats.nodes = ULLONG_MAX - allowed;
         stats.selective_depth = 0;
         success = negamax(&position, 1, 0, -INFINITE_SCORE, INFINITE_SCORE,
@@ -771,6 +771,41 @@ static void test_two_plies_back(void)
     assert(last->score[WHITE_PAWN][a3.to] == -11 && older->score[WHITE_PAWN][a3.to] == -12);
 }
 
+static void test_quiet_escape_bonus(void)
+{
+    /* ...e5 attacks the knight on d4. Nb3 steps into the a4 pawn's
+       attack, whereas Nf3 leaves both pawn attacks behind. */
+    struct Position position = position_from_fen("7k/8/8/4p3/p2N4/8/8/K7", "w", "-");
+    struct Move b3 = legal_move_named(position, "d4b3");
+    struct Move f3 = legal_move_named(position, "d4f3");
+    struct Move moves[] = { b3, f3 };
+    clear_move_hints(&hints);
+    /* 112 history points are worth 14336; 113 are worth 14464.
+       The escape bonus falls between them and is not a forced priority. */
+    hints.quiet_history[WHITE][b3.from][b3.to] = 112;
+    order_quiet_moves(&position, moves, 2, &hints, NULL, NULL);
+    expect_same_move(moves[0], f3);
+    hints.quiet_history[WHITE][b3.from][b3.to] = 113;
+    order_quiet_moves(&position, moves, 2, &hints, NULL, NULL);
+    expect_same_move(moves[0], b3);
+
+    assert(escape_bonus(BLACK_QUEEN, ROOK_THREAT, NO_THREAT) == 51700);
+    assert(escape_bonus(BLACK_QUEEN, PAWN_THREAT, ROOK_THREAT) == 14450);
+    assert(escape_bonus(WHITE_ROOK, MINOR_THREAT, ROOK_THREAT) == 25600);
+    assert(escape_bonus(WHITE_ROOK, MINOR_THREAT, MINOR_THREAT) == 14450);
+    assert(escape_bonus(WHITE_ROOK, ROOK_THREAT, NO_THREAT) == 0);
+    assert(escape_bonus(WHITE_BISHOP, NO_THREAT, NO_THREAT) == 0);
+
+    /* The white rook on d1 attacks the black queen on d5. On the current
+       board the queen blocks its line to d6, so Qd6 gets the full bonus
+       even though the rook could capture it there after the move. */
+    position = position_from_fen("7k/8/8/3q4/8/8/8/K2R4", "b", "-");
+    struct Move d6 = legal_move_named(position, "d5d6");
+    int threats[64];
+    find_enemy_threats(&position, threats);
+    assert(ordinary_quiet_score(&position, d6, NULL, NULL, NULL, threats) == 51700);
+}
+
 static void test_killer_ordering(void)
 {
     clear_move_hints(&hints);
@@ -1025,7 +1060,7 @@ static void test_quiet_history(void)
 
     /* History scores affect only the quiet suffix, with stable ties.
        Even maximum credit for an absent move cannot add it to the list. */
-    position = position_from_fen("7k/8/4p3/3r4/8/8/8/K2Q4", "w", "-");
+    position = position_from_fen("7k/8/4p3/3n4/8/8/8/K2Q4", "w", "-");
     struct Move capture = legal_move_named(position, "d1d5");
     struct Move best_quiet = legal_move_named(position, "d1b1");
     struct Move tie_a = legal_move_named(position, "a1b1");
@@ -1043,7 +1078,7 @@ static void test_quiet_history(void)
     order_moves(&position, moves, count, NULL);
     for (int i = 0; i < count; i++)
         original[i] = moves[i];
-    order_quiet_history(&position, moves, count, &hints, NULL, NULL);
+    order_quiet_moves(&position, moves, count, &hints, NULL, NULL);
     expect_same_move(moves[0], capture);
     expect_same_move(moves[1], best_quiet);
     expect_same_move(moves[2], tie_a);
@@ -1065,7 +1100,7 @@ static void test_quiet_history(void)
     expect_same_move(moves[1], capture);
     expect_same_move(moves[2], tie_b);
     expect_same_move(moves[3], best_quiet);
-    order_quiet_history(&position, moves, 0, &hints, NULL, NULL);
+    order_quiet_moves(&position, moves, 0, &hints, NULL, NULL);
     free(original);
     free(moves);
 
@@ -1136,7 +1171,7 @@ static void test_history_penalties(void)
     int count = generate_moves(&position, moves);
     assert(count == 20);
     order_moves(&position, moves, count, NULL);
-    order_quiet_history(&position, moves, count, &hints, NULL, NULL);
+    order_quiet_moves(&position, moves, count, &hints, NULL, NULL);
     expect_same_move(moves[0], pawn);
     expect_same_move(moves[1], legal_move_named(position, "g1f3"));
     expect_same_move(moves[count - 2], a);
@@ -1145,22 +1180,26 @@ static void test_history_penalties(void)
     clear_move_hints(&hints);
     expect_empty_quiet_history(&hints);
 
-    /* Force Qxd5 first with a root hint. It fails, then three quiet king moves fail. Qb1 cuts off.
-       Only those three quiet alternatives lose credit; later moves and
+    /* Force Qxd5 first with a root hint. It fails, then two killer king moves fail. Qb1 cuts off.
+       Only those two quiet alternatives lose credit; later moves and
        the earlier capture keep zero, as does the other color's table. */
     position = position_from_fen("7k/8/4p3/3r4/8/8/8/K2Q4", "w", "-");
     struct Move preferred = legal_move_named(position, "d1d5");
+    struct Move kb1 = legal_move_named(position, "a1b1");
+    struct Move ka2 = legal_move_named(position, "a1a2");
+    remember_killer(&hints, 0, ka2);
+    remember_killer(&hints, 0, kb1);
     struct SearchStats stats = { 0, 0 };
     struct SearchResult result;
     int success = negamax(&position, 1, 0, -INFINITE_SCORE, 200,
                           -1, &preferred, NULL, &hints, &stats, &result);
-    assert(success && result.score == 300 && stats.nodes == 13);
+    assert(success && result.score == 300 && stats.nodes == 11);
     expect_move(result, "d1b1");
     for (int color = 0; color < 2; color++) {
         for (int from = 0; from < 64; from++) {
             for (int to = 0; to < 64; to++) {
                 int expected = 0;
-                if (color == WHITE && from == 0 && (to == 1 || to == 8 || to == 9))
+                if (color == WHITE && from == 0 && (to == 1 || to == 8))
                     expected = -1;
                 if (color == WHITE && from == 3 && to == 1)
                     expected = 1;
@@ -1181,13 +1220,15 @@ static void test_history_penalties(void)
        Black may learn its own replies, but cannot change White's entries. */
     clear_move_hints(&hints);
     stats.nodes = 0;
+    remember_killer(&hints, 0, ka2);
+    remember_killer(&hints, 0, kb1);
     success = negamax(&position, 2, 0, -INFINITE_SCORE, 200,
                       -1, &preferred, NULL, &hints, &stats, &result);
     assert(success && result.score == 300);
     expect_move(result, "d1b1");
     assert(hints.quiet_history[WHITE][0][1] == -4);
     assert(hints.quiet_history[WHITE][0][8] == -4);
-    assert(hints.quiet_history[WHITE][0][9] == -4);
+    assert(hints.quiet_history[WHITE][0][9] == 0);
     assert(hints.quiet_history[WHITE][3][1] == 4);
     assert(hints.quiet_history[WHITE][3][2] == 0); /* Unsearched Qc1. */
 
@@ -1197,8 +1238,10 @@ static void test_history_penalties(void)
     history.count = 0;
     remember_position(&history, &position);
     prepare_repetition_history(&history);
-    for (int allowed = 12; allowed <= 13; allowed++) {
+    for (int allowed = 10; allowed <= 11; allowed++) {
         clear_move_hints(&hints);
+        remember_killer(&hints, 0, ka2);
+        remember_killer(&hints, 0, kb1);
         stats.nodes = ULLONG_MAX - allowed;
         success = negamax(&position, 1, 0, -INFINITE_SCORE, 301,
                           -1, &preferred, &history, &hints, &stats, &result);
@@ -1413,6 +1456,7 @@ int main(void)
     test_previous_move_evasions();
     test_previous_move_quiets();
     test_two_plies_back();
+    test_quiet_escape_bonus();
     test_killer_ordering();
     test_killer_search();
     test_countermoves();

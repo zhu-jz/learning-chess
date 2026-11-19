@@ -1396,21 +1396,80 @@ static void search_move_first(struct Move moves[], int count, const struct Move 
     }
 }
 
+/* A pawn attack takes precedence over a minor-piece attack, which takes
+   precedence over a rook attack. Queens and kings do not enter this rule. */
+enum { NO_THREAT, ROOK_THREAT, MINOR_THREAT, PAWN_THREAT };
+
+static void find_enemy_threats(const struct Position *position, int threats[64])
+{
+    for (int to = 0; to < 64; to++)
+        threats[to] = NO_THREAT;
+    for (int from = 0; from < 64; from++) {
+        int piece = position->board[from];
+        if (piece_color(piece) != 1 - position->side_to_move)
+            continue;
+        int type = piece_type(piece);
+        int threat;
+        if (type == WHITE_PAWN)
+            threat = PAWN_THREAT;
+        else if (type == WHITE_KNIGHT || type == WHITE_BISHOP)
+            threat = MINOR_THREAT;
+        else if (type == WHITE_ROOK)
+            threat = ROOK_THREAT;
+        else
+            continue;
+        for (int to = 0; to < 64; to++) {
+            if (threat > threats[to] && piece_attacks_square(position, from, to))
+                threats[to] = threat;
+        }
+    }
+}
+
+static int escape_bonus(int piece, int from_threat, int to_threat)
+{
+    int type = piece_type(piece);
+    int threatened = (type == WHITE_QUEEN && from_threat >= ROOK_THREAT)
+                  || (type == WHITE_ROOK && from_threat >= MINOR_THREAT)
+                  || ((type == WHITE_KNIGHT || type == WHITE_BISHOP) && from_threat == PAWN_THREAT);
+    if (!threatened)
+        return 0;
+    if (type == WHITE_QUEEN && to_threat == NO_THREAT)
+        return 51700;
+    if (type == WHITE_ROOK && to_threat < MINOR_THREAT)
+        return 25600;
+    /* The smaller bonus requires only that no enemy pawn attacks the destination. */
+    if (to_threat != PAWN_THREAT)
+        return 14450;
+    return 0;
+}
+
+static int ordinary_quiet_score(const struct Position *position, struct Move move,
+                                const struct MoveHints *hints, const struct ReplyHistory *replies,
+                                const struct ReplyHistory *two_plies_back, const int threats[64])
+{
+    int history = quiet_move_score(position, move, hints, replies, two_plies_back);
+    return 128 * history + escape_bonus(position->board[move.from], threats[move.from], threats[move.to]);
+}
+
 /* Sort only the quiet suffix, after material ordering has separated it
-   from captures and promotions. Equal history scores keep their order. */
-static void order_quiet_history(const struct Position *position, struct Move moves[], int count,
+   from captures and promotions. Use the board before any candidate moves. */
+static void order_quiet_moves(const struct Position *position, struct Move moves[], int count,
                                 const struct MoveHints *hints, const struct ReplyHistory *replies,
                                 const struct ReplyHistory *two_plies_back)
 {
     int first_quiet = 0;
     while (first_quiet < count && !is_quiet_move(position, moves[first_quiet]))
         first_quiet++;
+    if (count - first_quiet < 2)
+        return;
+    int threats[64];
+    find_enemy_threats(position, threats);
     for (int i = first_quiet + 1; i < count; i++) {
         struct Move move = moves[i];
-        int score = quiet_move_score(position, move, hints, replies, two_plies_back);
+        int score = ordinary_quiet_score(position, move, hints, replies, two_plies_back, threats);
         int j = i;
         while (j > first_quiet
-               && quiet_move_score(position, moves[j - 1], hints, replies, two_plies_back) < score) {
+               && ordinary_quiet_score(position, moves[j - 1], hints, replies, two_plies_back, threats) < score) {
             moves[j] = moves[j - 1];
             j--;
         }
@@ -1542,8 +1601,8 @@ static int negamax(const struct Position *position, int depth, int ply,
     } else {
         order_moves(position, moves, count, hints);
         if (depth > 0) {
+            order_quiet_moves(position, moves, count, hints, replies, two_plies_back);
             if (hints != NULL) {
-                order_quiet_history(position, moves, count, hints, replies, two_plies_back);
                 order_quiet_replies(position, moves, count, hints->killers[ply], countermove);
             }
             defer_losing_captures(position, moves, count, hints);
