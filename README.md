@@ -2484,6 +2484,43 @@ To check the count by hand, run `position startpos` followed by
 has no captures in those positions. The report gives 20 nodes.
 The separate `seldepth` field still records the deepest ply reached.
 
+## Lesson 46 — Follow Ka2 through a depth-one aspiration window
+
+Set up `8/7p/8/8/8/8/2k5/K7 w - - 0 1`. White has one legal move,
+Ka2. A fresh reference worker starts with an estimated score of zero
+and searches within 19 units on either side of that estimate. The
+table shows the actual arguments and return value of each root call.
+Scores in the table use the reference's internal units.
+
+| Halfmove clock | Attempt | Alpha | Beta | Returned score | Nodes before → after |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 0 | 1 | −19 | 19 | −395 | 0 → 1 |
+| 0 | 2 | −414 | 0 | −395 | 1 → 2 |
+| 99 | 1 | −19 | 19 | 0 | 0 → 1 |
+
+At clock zero the first call plays Ka2 and returns −395. This is below
+alpha, so the search has established an upper bound on White's score.
+The reference sets the new alpha to the returned score minus the current
+margin (`−395 − 19 = −414`). It moves beta to the midpoint of the old
+window (`(−19 + 19) / 2 = 0`). The second call plays Ka2 again. This
+time −395 lies strictly inside the window, so the search accepts the
+score. With 208 internal units per pawn, the UCI conversion truncates
+`−395 × 100 / 208` toward zero and prints `score cp -189 nodes 2`.
+
+At clock 99, Ka2 brings the halfmove clock to 100. The draw score fits
+inside the first window, so the iteration ends after one move. Our C
+engine currently starts depth one with a full window. It plays Ka2 once
+in both positions and returns −100 cp at clock zero and 0 cp at clock 99.
+
+Run both positions against a fresh reference worker for each clock:
+
+```powershell
+.\.venv\Scripts\python.exe -B tests\compare_nodes.py build\learning-chess.exe
+```
+
+The reference search computes each result. The test records the window
+and counts around the root call, then checks them against the table.
+
 ## Build and try it
 
 From the project root in PowerShell, using MSYS2 UCRT64 GCC:
