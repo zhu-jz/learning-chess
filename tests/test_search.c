@@ -347,6 +347,43 @@ static void test_principal_variation_search(void)
     }
 }
 
+static void test_first_root_cutoff(void)
+{
+    struct Position root = position_from_fen("7k/8/5KQ1/8/8/8/8/8", "w", "-");
+    struct Move moves[MAX_MOVES];
+    int count = generate_moves(&root, moves);
+    const char *first_moves[] = { "f6e5", "f6f5", "f6g5", "f6e6", "f6e7", "f6f7", "g6b1" };
+    assert(count >= 7);
+    for (int i = 0; i < 7; i++) {
+        char text[6];
+        move_to_string(moves[i], text);
+        assert(strcmp(text, first_moves[i]) == 0);
+    }
+
+    /* Each king move leaves Black with no check and no legal reply. */
+    for (int i = 0; i < 6; i++) {
+        struct Position child = root;
+        struct Move replies[MAX_MOVES];
+        assert(apply_move(&child, moves[i]));
+        assert(is_in_check(&child, BLACK) == 0);
+        assert(generate_moves(&child, replies) == 0);
+    }
+
+    /* Search the same first window twice with fresh histories. Giving Qb1
+       priority is the only difference between the two attempts. */
+    struct Move queen_move = moves[6];
+    for (int trial = 0; trial < 2; trial++) {
+        const struct Move *preferred = trial == 0 ? NULL : &queen_move;
+        struct SearchStats stats = { 0, 0 };
+        struct SearchResult result;
+        clear_move_hints(&hints);
+        int success = negamax(&root, 1, 0, -9, 9, -1, preferred, NULL, &hints, &stats, &result);
+        assert(success && result.score == 900);
+        expect_move(result, "g6b1");
+        assert(stats.nodes == (trial == 0 ? 7 : 1));
+    }
+}
+
 static void test_aspiration_windows(void)
 {
     /* Every root move reaches the fifty-move threshold, making the true
@@ -1457,6 +1494,7 @@ int main(void)
     test_repetition();
     test_selective_depth();
     test_principal_variation_search();
+    test_first_root_cutoff();
     test_aspiration_windows();
     test_mate_distance_pruning();
     test_capture_ordering();

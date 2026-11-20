@@ -2579,6 +2579,46 @@ can return the mate score inside the window. Both engines report
 `score mate 1` and `bestmove g6g7`. Their node counts differ from the
 first attempt onward.
 
+## Lesson 49 — Why does the first cutoff take seven nodes?
+
+Put the white king on f6, the white queen on g6, and the black king on
+h8. White can mate with Qg7#, but the first aspiration window only asks
+whether White can beat a small beta. Both engines reach that cutoff on
+**Qb1**. Here is the complete first C attempt, in search order.
+
+| Node | White move | What happens at depth zero | Score for White (cp) |
+| ---: | --- | --- | ---: |
+| 1 | Ke5 | Stalemate | 0 |
+| 2 | Kf5 | Stalemate | 0 |
+| 3 | Kg5 | Stalemate | 0 |
+| 4 | Ke6 | Stalemate | 0 |
+| 5 | Ke7 | Stalemate | 0 |
+| 6 | Kf7 | Stalemate | 0 |
+| 7 | Qb1 | Black has only the quiet Kg8. Quiescence keeps the material score. | 900 |
+
+After each king move, the queen on g6 covers g8, g7, and h7. Black has
+no legal move and is outside check. After Qb1, the queen releases g8.
+Quiescence plays no reply, so each row costs exactly one node. The six
+zeros fall below beta (9 cp), and 900 reaches the cutoff.
+
+Why does Qb1 come seventh? Our generator scans starting squares in board
+order. It reaches the king on f6 before the queen on g6, and the quiet
+moves keep their order when their scores tie. The reference generates
+queen moves before king moves in this position. Its first legal move is
+Qb1, and the root move picker gives that move priority. The reference
+trace shows Qb1 returning 2390 internal units against beta 19 after one
+node. Qg7# is found on a later attempt.
+
+The focused C test runs the same window twice with fresh move hints.
+Giving Qb1 priority brings the first cutoff from seven nodes to one.
+Both C runs return 900 cp. To see the reference's first move and its
+returned score, run this from PowerShell:
+
+```powershell
+@('position fen 7k/8/5KQ1/8/8/8/8/8 w - - 0 1', 'bench 1 1 1 current depth', 'quit') |
+    .\.venv\Scripts\python.exe -B tests\trace_root_window.py
+```
+
 ## Build and try it
 
 From the project root in PowerShell, using MSYS2 UCRT64 GCC:
