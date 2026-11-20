@@ -1456,11 +1456,13 @@ static int ordinary_quiet_score(const struct Position *position, struct Move mov
     return 128 * history + escape_bonus(position->board[move.from], threats[move.from], threats[move.to]);
 }
 
+static int earlier_root_move(const struct Position *position, struct Move a, struct Move b);
+
 /* Sort only the quiet suffix, after material ordering has separated it
    from captures and promotions. Use the board before any candidate moves. */
 static void order_quiet_moves(const struct Position *position, struct Move moves[], int count,
-                                const struct MoveHints *hints, const struct ReplyHistory *replies,
-                                const struct ReplyHistory *two_plies_back)
+                              const struct MoveHints *hints, const struct ReplyHistory *replies,
+                              const struct ReplyHistory *two_plies_back, int ply)
 {
     int first_quiet = 0;
     while (first_quiet < count && !is_quiet_move(position, moves[first_quiet]))
@@ -1473,9 +1475,15 @@ static void order_quiet_moves(const struct Position *position, struct Move moves
         struct Move move = moves[i];
         int score = ordinary_quiet_score(position, move, hints, replies, two_plies_back, threats);
         int j = i;
-        while (j > first_quiet
-               && ordinary_quiet_score(position, moves[j - 1], hints, replies, two_plies_back, threats) < score) {
-            moves[j] = moves[j - 1];
+        while (j > first_quiet) {
+            struct Move before = moves[j - 1];
+            int before_score = ordinary_quiet_score(position, before, hints, replies, two_plies_back, threats);
+            if (before_score > score)
+                break;
+            /* At the root, resolve ties in the reference's generation order. */
+            if (before_score == score && (ply != 0 || !earlier_root_move(position, move, before)))
+                break;
+            moves[j] = before;
             j--;
         }
         moves[j] = move;
@@ -1602,7 +1610,7 @@ static int negamax(const struct Position *position, int depth, int ply,
     } else {
         order_moves(position, moves, count, hints);
         if (depth > 0) {
-            order_quiet_moves(position, moves, count, hints, replies, two_plies_back);
+            order_quiet_moves(position, moves, count, hints, replies, two_plies_back, ply);
             if (hints != NULL) {
                 order_quiet_replies(position, moves, count, hints->killers[ply], countermove);
             }

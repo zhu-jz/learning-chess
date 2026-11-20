@@ -39,14 +39,13 @@ def compare(engine):
         for ply, move in moves:
             print("  " * (ply + 1) + move)
 
-    king_moves = [(0, move) for move in "f6e5 f6f5 f6g5 f6e6 f6e7 f6f7".split()]
     if len(shared) != 16 or shared[0] != (0, "g6b1") or shared[-1] != (0, "g6g7"):
         raise AssertionError("Expected the reference to reach Qg7 on its sixteenth node")
     replies = [move for ply, move in shared if ply > 0]
     if replies != ["h8g8", "h8g8"]:
         raise AssertionError(f"Unexpected replies in the reference retry: {replies}")
-    if actual != shared[:1] + king_moves + shared[1:]:
-        raise AssertionError("Expected exactly six extra king moves after Qb1")
+    if actual != shared:
+        raise AssertionError("Expected the same moves at the same plies throughout the retry")
     for output in (ours.stdout, theirs.stdout):
         if "bestmove g6g7" not in output.splitlines():
             raise AssertionError("Expected both completed searches to choose Qg7")

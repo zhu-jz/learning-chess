@@ -2703,6 +2703,32 @@ The comparison prints both sequences, indents Black's replies, and
 checks that inserting the six king moves after Qb1 reproduces the
 entire C trace for the retry.
 
+## Lesson 52 — Break quiet-move ties at the root
+
+After Qb1 raises the lower bound in the Qg7# position, several quiet
+moves have equal ordering scores. Previously C kept them in board-scan
+order, so six moves from the king on f6 came before the remaining queen
+moves. Now the ordinary quiet-move sort at the root compares generation
+order when two scores tie. The comparison from lesson 50 places queen
+moves before king moves and visits the queen's destinations in square
+order. A higher history or escape score still takes priority.
+
+On the second attempt the engines now play the same 14 queen moves and
+the same two replies, in the same order. Qg7# reaches the cutoff before
+any king move is tried. Counts below start again at zero for each attempt.
+
+| Depth-one search | Previous C | This lesson | Reference |
+| --- | ---: | ---: | ---: |
+| First attempt | 1 | 1 | 1 |
+| Second attempt | 22 | 16 | 16 |
+| Third attempt | 28 | 28 | 26 |
+| Total reported | 51 | 45 | 43 |
+
+Run the trace comparison from lesson 51 to replay the retry. It now
+checks equality of the complete move sequence, including the ply of each
+reply. In the third attempt C still plays two more moves than the
+reference.
+
 ## Build and try it
 
 From the project root in PowerShell, using MSYS2 UCRT64 GCC:

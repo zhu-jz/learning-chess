@@ -369,21 +369,27 @@ static void test_first_root_cutoff(void)
         assert(generate_moves(&child, replies) == 0);
     }
 
-    /* Search the same first window twice with fresh histories. Giving Qb1
-       priority is the only difference between the two attempts. */
+    /* With equal quiet scores, Qb1 wins the generation-order tie. An
+       explicit preference for Ke5 still puts that stalemate ahead of Qb1. */
     struct Move queen_move;
     assert(first_root_move(&root, &queen_move));
     expect_same_move(queen_move, moves[6]);
     for (int trial = 0; trial < 2; trial++) {
-        const struct Move *preferred = trial == 0 ? NULL : &queen_move;
+        const struct Move *preferred = trial == 0 ? NULL : &moves[0];
         struct SearchStats stats = { 0, 0 };
         struct SearchResult result;
         clear_move_hints(&hints);
         int success = negamax(&root, 1, 0, -9, 9, -1, preferred, NULL, &hints, &stats, &result);
         assert(success && result.score == 900);
         expect_move(result, "g6b1");
-        assert(stats.nodes == (trial == 0 ? 7 : 1));
+        assert(stats.nodes == (trial == 0 ? 1 : 2));
     }
+    /* One history point for Ke5 settles the order before the tie-break. */
+    clear_move_hints(&hints);
+    update_quiet_history(&hints, WHITE, moves[0], 1);
+    struct Move pair[] = { queen_move, moves[0] };
+    order_quiet_moves(&root, pair, 2, &hints, NULL, NULL, 0);
+    expect_same_move(pair[0], moves[0]);
 }
 
 static void expect_first_root_move(struct Position position, const char *name)
@@ -528,7 +534,7 @@ static void test_mate_distance_pruning(void)
     int success = negamax(&position, 1, 0, MATE_SCORE - 1, INFINITE_SCORE,
                           -1, NULL, NULL, NULL, &stats, &result);
     assert(success && result.score == 0 && stats.nodes == 20);
-    expect_move(result, "b1a3");
+    expect_move(result, "a2a3");
     result = search_at_horizon(position, 5, MATE_SCORE - 6, INFINITE_SCORE, 0, &stats);
     assert(stats.nodes == 0 && result.pv_length == 0);
     result = search_at_horizon(position, 5, -INFINITE_SCORE, -MATE_SCORE + 5, 0, &stats);
@@ -860,10 +866,10 @@ static void test_quiet_escape_bonus(void)
     /* 112 history points are worth 14336; 113 are worth 14464.
        The escape bonus falls between them and is not a forced priority. */
     hints.quiet_history[WHITE][b3.from][b3.to] = 112;
-    order_quiet_moves(&position, moves, 2, &hints, NULL, NULL);
+    order_quiet_moves(&position, moves, 2, &hints, NULL, NULL, 1);
     expect_same_move(moves[0], f3);
     hints.quiet_history[WHITE][b3.from][b3.to] = 113;
-    order_quiet_moves(&position, moves, 2, &hints, NULL, NULL);
+    order_quiet_moves(&position, moves, 2, &hints, NULL, NULL, 1);
     expect_same_move(moves[0], b3);
 
     assert(escape_bonus(BLACK_QUEEN, ROOK_THREAT, NO_THREAT) == 51700);
@@ -1155,7 +1161,7 @@ static void test_quiet_history(void)
     order_moves(&position, moves, count, NULL);
     for (int i = 0; i < count; i++)
         original[i] = moves[i];
-    order_quiet_moves(&position, moves, count, &hints, NULL, NULL);
+    order_quiet_moves(&position, moves, count, &hints, NULL, NULL, 1);
     expect_same_move(moves[0], capture);
     expect_same_move(moves[1], best_quiet);
     expect_same_move(moves[2], tie_a);
@@ -1177,7 +1183,7 @@ static void test_quiet_history(void)
     expect_same_move(moves[1], capture);
     expect_same_move(moves[2], tie_b);
     expect_same_move(moves[3], best_quiet);
-    order_quiet_moves(&position, moves, 0, &hints, NULL, NULL);
+    order_quiet_moves(&position, moves, 0, &hints, NULL, NULL, 1);
     free(original);
     free(moves);
 
@@ -1248,7 +1254,7 @@ static void test_history_penalties(void)
     int count = generate_moves(&position, moves);
     assert(count == 20);
     order_moves(&position, moves, count, NULL);
-    order_quiet_moves(&position, moves, count, &hints, NULL, NULL);
+    order_quiet_moves(&position, moves, count, &hints, NULL, NULL, 1);
     expect_same_move(moves[0], pawn);
     expect_same_move(moves[1], legal_move_named(position, "g1f3"));
     expect_same_move(moves[count - 2], a);
@@ -1420,7 +1426,7 @@ int main(void)
     stats.nodes = 0;
     stats.selective_depth = 0;
     int success = negamax(&position, 4, 0, -INFINITE_SCORE, INFINITE_SCORE, -1, NULL, NULL, NULL, &stats, &result);
-    assert(success && result.pv_length == 4 && stats.nodes == 1875);
+    assert(success && result.pv_length == 4 && stats.nodes == 1876);
     check_pv(position, result, 0);
     stats.nodes = 0;
     stats.selective_depth = 0;
@@ -1461,7 +1467,7 @@ int main(void)
     success = negamax(&position, 2, 0, -INFINITE_SCORE, INFINITE_SCORE,
                       -1, NULL, NULL, NULL, &stats, &result);
     assert(success && result.score == 0 && stats.nodes == 61);
-    expect_move(result, "b1a3");
+    expect_move(result, "a2a3");
 
     /* Below the root, 100 halfmoves is a draw even when material is unequal.
        Test the quiescence horizon and the hard ply limit as well. */

@@ -1415,9 +1415,9 @@ class UciTests(unittest.TestCase):
         # Bxc6 no longer appears to win a whole knight at depth one.
         self.send("position startpos moves e2e4 e7e5 g1f3 b8c6 f1b5 a7a6\n")
         self.expect_search(1, "cp", 100, "b5c6", nodes=50)
-        self.expect_search(2, "cp", 100, "b5c6", nodes=191)
+        self.expect_search(2, "cp", 100, "b5c6", nodes=193)
         self.send("position fen r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1\n")
-        self.expect_search(3, "cp", 0, "e2a6", nodes=9391)
+        self.expect_search(3, "cp", 0, "e2a6", nodes=9385)
         self.send("quit\n")
         self.expect_exit()
 
@@ -1476,14 +1476,14 @@ class UciTests(unittest.TestCase):
     def test_mate_distance_prunes_after_finding_mate_in_one(self):
         self.send("position fen 7k/8/5KQ1/8/8/8/8/8 w - - 0 1\ngo depth 4\n")
         # At depth one the queen advantage and then the mate each exceed beta.
-        # The three attempts play 1, 22, and 28 moves.
-        for depth, seldepth, nodes in [(1, 2, 51), (2, 1, 74), (3, 1, 97), (4, 1, 120)]:
+        # The three attempts play 1, 16, and 28 moves.
+        for depth, seldepth, nodes in [(1, 2, 45), (2, 1, 68), (3, 1, 91), (4, 1, 114)]:
             self.assertEqual(self.read_search_info(depth, seldepth), ("mate", 1, nodes, ["g6g7"]))
         self.expect("bestmove g6g7")
         # Only normal search prunes by mate distance; depth one still sends
         # every child to quiescence, including when a fresh go follows.
         self.send("go depth 1\n")
-        self.assertEqual(self.read_search_info(1, 2), ("mate", 1, 51, ["g6g7"]))
+        self.assertEqual(self.read_search_info(1, 2), ("mate", 1, 45, ["g6g7"]))
         self.expect("bestmove g6g7")
         self.expect_state({"f6": "K", "g6": "Q", "h8": "k"})
         self.send("quit\n")
@@ -1521,7 +1521,7 @@ class UciTests(unittest.TestCase):
     def test_fifty_move_threshold_and_root_choice(self):
         for board, side, before_draw, at_draw in [
                 ("7k/8/8/8/8/8/8/K2Q4", "w", "d1b1", "d1b1"),
-                ("k2q4/8/8/8/8/8/8/7K", "b", "a8a7", "d8d1")]:
+                ("k2q4/8/8/8/8/8/8/7K", "b", "d8d2", "d8d1")]:
             for clock in [98, 99, 100, 101, 2147483647]:
                 self.send(f"position fen {board} {side} - - {clock} 1\n")
                 # At 98, one quiet move leaves material to evaluate. At 99,
@@ -1584,7 +1584,7 @@ class UciTests(unittest.TestCase):
         cycle = "b1a3 h8g8 a3b1 g8h8"
         for moves in ["", " moves " + cycle]:
             self.send(base + moves + "\n")
-            self.expect_search(1, "cp", -200, "a1a2", nodes=10)
+            self.expect_search(1, "cp", -200, "b1d2", nodes=10)
         self.send(base + " moves " + cycle + " " + cycle + "\n")
         for repeat in range(2):
             self.expect_search(3, "cp", 0, "b1a3", nodes=53)
@@ -1592,7 +1592,7 @@ class UciTests(unittest.TestCase):
                               halfmove=8, fullmove=5)
         # The same board and clocks in FEN do not supply the preceding moves.
         self.send("position fen 4r2k/8/8/8/8/8/8/KN6 w - - 8 5\n")
-        self.expect_search(1, "cp", -200, "a1a2", nodes=10)
+        self.expect_search(1, "cp", -200, "b1d2", nodes=10)
         self.send("position startpos\n")
         self.expect_search(2, "cp", 0, "a2a3", nodes=81)
         self.send("quit\n")
