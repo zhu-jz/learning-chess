@@ -1743,7 +1743,7 @@ static void print_search_info(int depth, const struct SearchResult *result,
     fflush(stdout);
 }
 
-/* Finish one depth, retrying if the previous score was a poor estimate.
+/* Finish one depth, retrying if our starting score was a poor estimate.
    Only a result strictly inside the window supplies an exact root score. */
 static int search_iteration(const struct Position *position, int depth,
                             const struct SearchResult *previous,
@@ -1751,8 +1751,10 @@ static int search_iteration(const struct Position *position, int depth,
                             struct MoveHints *hints,
                             struct SearchStats *stats, struct SearchResult *result)
 {
-    int alpha = -INFINITE_SCORE;
-    int beta = INFINITE_SCORE;
+    /* Start the first depth around an even score. The reference's 19-unit
+       margin is about 9 centipawns (208 reference units per pawn). */
+    int alpha = -9;
+    int beta = 9;
     const struct Move *preferred = NULL;
     if (previous != NULL) {
         /* Fifty centipawns is half a pawn in our material evaluation. */

@@ -2521,6 +2521,32 @@ Run both positions against a fresh reference worker for each clock:
 The reference search computes each result. The test records the window
 and counts around the root call, then checks them against the table.
 
+## Lesson 47 — Give depth one an aspiration window
+
+Before the first move of a search, we have no score from a shallower
+iteration. We start with an estimate of zero. The fresh reference worker
+in lesson 46 used a margin of 19 internal units. A pawn is 208 units in
+the reference and 100 centipawns in our evaluator, so we use 9 centipawns
+on each side of zero.
+
+Follow the only legal move, Ka2, in the same two positions:
+
+| Halfmove clock | First C window (cp) | First score (cp) | What the C search does | C / reference nodes |
+| ---: | ---: | ---: | --- | ---: |
+| 99 | −9 to 9 | 0 | Accepts the draw | 1 / 1 |
+| 0 | −9 to 9 | −100 | Lowers alpha and plays Ka2 again | 2 / 2 |
+
+At clock zero, White is a pawn down. The first call returns −100, below
+alpha. Our retry loop opens the lower side all the way and keeps beta at
+9. The second call returns −100 inside that window, so the engine prints
+`score cp -100 nodes 2`. The reference uses the narrower retry window
+from lesson 46 and reports −189 cp from its evaluator.
+
+From depth two onward, we have the previous iteration's score and use
+our existing 50-centipawn margin around it. Each `go` starts again at
+depth one. You can reproduce both Ka2 counts with the comparison command
+in lesson 46.
+
 ## Build and try it
 
 From the project root in PowerShell, using MSYS2 UCRT64 GCC:

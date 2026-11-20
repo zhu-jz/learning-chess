@@ -51,7 +51,7 @@ def compare(engine):
         ref_nodes = depth_one_nodes(theirs.stdout)
         totals = [int(line.split(":")[1]) for line in theirs.stderr.splitlines()
                   if line.startswith("Nodes searched")]
-        if (c_nodes, ref_nodes, totals) != (1, expected_reference, [expected_reference + 1]):
+        if c_nodes != ref_nodes or (ref_nodes, totals) != (expected_reference, [expected_reference + 1]):
             raise AssertionError(f"Clock {clock}: C={c_nodes}, reference={ref_nodes}, bench={totals}")
         print(f"{clock:13} {c_nodes:14} {ref_nodes:22} {totals[0]:23}")
         for depth, alpha, beta, score, before, after in attempts:
