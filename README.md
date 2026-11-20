@@ -2619,6 +2619,44 @@ returned score, run this from PowerShell:
     .\.venv\Scripts\python.exe -B tests\trace_root_window.py
 ```
 
+## Lesson 50 — Choose the first root move
+
+At the start of a fresh search, all 20 moves in the starting position
+earn the same material score at depth one. Which move gets to keep that
+tie? The reference lists one-square pawn pushes first, in square order.
+The C search now tries a2a3 first and reports it after 20 nodes.
+
+The choice uses the reference's generation order once, on the first
+attempt at depth one. Pawn pushes, promotions, captures, and en passant
+each have their place before the other pieces. After pawns come knights,
+bishops, rooks, queens, kings, and castling. The selected move goes
+through the same preference mechanism as the best move from a shallower
+search.
+
+There is one subtlety when the first candidate leaves its king in check.
+The reference fills that slot from the end of its list and checks the
+replacement again. Our code gets the same result by finding the last
+legal candidate in generation order. For example, with White Ka1, Pb2,
+Rd1 against Black Bc3, Kh8, the first candidate b2b3 opens the diagonal
+to a1. The replacement is Ka2.
+
+Return to the Qg7# position from lesson 49. Each entry counts only the
+moves played during that attempt. The final row is the UCI node count.
+
+| Depth-one search | Previous C | This lesson | Reference |
+| --- | ---: | ---: | ---: |
+| First attempt | 7 | 1 | 1 |
+| Second attempt | 16 | 22 | 16 |
+| Third attempt | 28 | 28 | 26 |
+| Total | 51 | 51 | 43 |
+
+Qb1 now reaches the first cutoff immediately. Previously, the six king
+moves that stalemate Black had already been tried and penalized by that
+cutoff. This time they still have their initial history scores when the
+second attempt begins. C searches Qb1, then those six king moves, before
+it reaches Qg7#. Both engines finish with `score mate 1` and
+`bestmove g6g7`.
+
 ## Build and try it
 
 From the project root in PowerShell, using MSYS2 UCRT64 GCC:

@@ -666,7 +666,7 @@ static int prepare_castling_move(const struct Position *position, struct Move *m
 
 /* The caller supplies room for MAX_MOVES entries. Return -1 if either color
    lacks exactly one king. This generator supports standard chess, not Chess960. */
-static int generate_moves(const struct Position *position, struct Move moves[])
+static int collect_moves(const struct Position *position, struct Move moves[], int test_king_safety)
 {
     const int white_promotions[4] = { WHITE_KNIGHT, WHITE_BISHOP, WHITE_ROOK, WHITE_QUEEN };
     const int black_promotions[4] = { BLACK_KNIGHT, BLACK_BISHOP, BLACK_ROOK, BLACK_QUEEN };
@@ -712,7 +712,7 @@ static int generate_moves(const struct Position *position, struct Move moves[])
                         move.promotion = white_promotions[choice];
                     else
                         move.promotion = black_promotions[choice];
-                    if (move_keeps_king_safe(position, move)) {
+                    if (!test_king_safety || move_keeps_king_safe(position, move)) {
                         moves[count] = move;
                         count++;
                     }
@@ -721,13 +721,18 @@ static int generate_moves(const struct Position *position, struct Move moves[])
                 continue;
             }
 
-            if (move_keeps_king_safe(position, move)) {
+            if (!test_king_safety || move_keeps_king_safe(position, move)) {
                 moves[count] = move;
                 count++;
             }
         }
     }
     return count;
+}
+
+static int generate_moves(const struct Position *position, struct Move moves[])
+{
+    return collect_moves(position, moves, 1);
 }
 
 /* Six bytes hold four coordinate characters, an optional suffix, and NUL. */
@@ -1743,6 +1748,127 @@ static void print_search_info(int depth, const struct SearchResult *result,
     fflush(stdout);
 }
 
+/* Pawn moves come in batches before knights, bishops, rooks, queens and kings.
+   Within each pawn batch a fixed step puts origins and destinations in the
+   same square order. En passant uses the origin to distinguish two capturers. */
+static int root_move_group(const struct Position *position, struct Move move)
+{
+    enum { SINGLE, DOUBLE, PROMOTE_RIGHT, PROMOTE_LEFT, PROMOTE_FORWARD,
+           CAPTURE_RIGHT, CAPTURE_LEFT, EN_PASSANT, PIECES, CASTLE = PIECES + WHITE_KING + 1 };
+    int type = piece_type(position->board[move.from]);
+    if (move.rook_from >= 0)
+        return CASTLE + (move.rook_from < move.from);
+    if (type != WHITE_PAWN)
+        return PIECES + type;
+    int step = move.to - move.from;
+    if (position->side_to_move == BLACK)
+        step = -step;
+    if (move.en_passant_capture_square >= 0)
+        return EN_PASSANT;
+    if (move.promotion != EMPTY) {
+        if (step == 9)
+            return PROMOTE_RIGHT;
+        if (step == 7)
+            return PROMOTE_LEFT;
+        return PROMOTE_FORWARD;
+    }
+    if (step == 8)
+        return SINGLE;
+    if (step == 16)
+        return DOUBLE;
+    if (step == 9)
+        return CAPTURE_RIGHT;
+    return CAPTURE_LEFT;
+}
+
+static int earlier_root_move(const struct Position *position, struct Move a, struct Move b)
+{
+    int group_a = root_move_group(position, a);
+    int group_b = root_move_group(position, b);
+    if (group_a != group_b)
+        return group_a < group_b;
+    if (a.from != b.from)
+        return a.from < b.from;
+    if (a.to != b.to)
+        return a.to < b.to;
+    return a.promotion > b.promotion; /* Queen, rook, bishop, knight. */
+}
+
+/* Before testing pins, the reference generates only captures of a checker
+   and interpositions when in single check. Mark those destination squares. */
+static int root_check_targets(const struct Position *position, int target[64])
+{
+    int king = find_king(position, position->side_to_move);
+    int checks = 0;
+    for (int from = 0; from < 64; from++) {
+        if (piece_color(position->board[from]) != 1 - position->side_to_move
+            || !piece_attacks_square(position, from, king))
+            continue;
+        checks++;
+        target[from] = 1;
+        int type = piece_type(position->board[from]);
+        if (type == WHITE_BISHOP || type == WHITE_ROOK || type == WHITE_QUEEN) {
+            int files = abs(from % 8 - king % 8);
+            int ranks = abs(from / 8 - king / 8);
+            int distance = files > ranks ? files : ranks;
+            int step = (from - king) / distance;
+            for (int to = king + step; to != from; to += step)
+                target[to] = 1;
+        }
+    }
+    return checks;
+}
+
+static int first_root_move(const struct Position *position, struct Move *first)
+{
+    struct Move moves[MAX_MOVES];
+    int count = collect_moves(position, moves, 0);
+    if (count <= 0)
+        return 0;
+    int target[64] = { 0 };
+    int checks = root_check_targets(position, target);
+    int earliest = -1;
+    int candidates = 0;
+    for (int i = 0; i < count; i++) {
+        struct Move move = moves[i];
+        if (checks && piece_type(position->board[move.from]) != WHITE_KING) {
+            if (checks > 1)
+                continue;
+            if (move.en_passant_capture_square >= 0) {
+                /* If the last pawn push uncovered the check on its starting
+                   square, capturing it en passant leaves that square open. */
+                int forward = position->side_to_move == WHITE ? 8 : -8;
+                if (target[move.to + forward])
+                    continue;
+            } else if (!target[move.to]) {
+                continue;
+            }
+        }
+        moves[candidates] = move;
+        if (earliest < 0 || earlier_root_move(position, move, moves[earliest]))
+            earliest = candidates;
+        candidates++;
+    }
+    if (earliest < 0)
+        return 0;
+    if (move_keeps_king_safe(position, moves[earliest])) {
+        *first = moves[earliest];
+        return 1;
+    }
+    /* The reference fills an illegal first slot from the tail, trying again
+       if necessary. The last legal candidate is exactly the replacement. */
+    int last = -1;
+    for (int i = 0; i < candidates; i++) {
+        if (move_keeps_king_safe(position, moves[i])
+            && (last < 0 || earlier_root_move(position, moves[last], moves[i])))
+            last = i;
+    }
+    if (last < 0)
+        return 0;
+    *first = moves[last];
+    return 1;
+}
+
 /* Finish one depth, retrying if our starting score was a poor estimate.
    Only a result strictly inside the window supplies an exact root score. */
 static int search_iteration(const struct Position *position, int depth,
@@ -1756,13 +1882,15 @@ static int search_iteration(const struct Position *position, int depth,
     int estimate = 0;
     int margin = 9;
     const struct Move *preferred = NULL;
+    struct Move first;
     if (previous != NULL) {
         /* Fifty centipawns is half a pawn in our material evaluation. */
         estimate = previous->score;
         margin = 50;
         if (previous->pv_length > 0)
             preferred = &previous->pv[0];
-    }
+    } else if (first_root_move(position, &first))
+        preferred = &first;
 
     int alpha = estimate - margin;
     int beta = estimate + margin;
@@ -1778,6 +1906,8 @@ static int search_iteration(const struct Position *position, int depth,
         struct SearchResult attempt;
         if (!negamax(position, depth, 0, alpha, beta, -1, preferred, history, hints, stats, &attempt))
             return 0;
+        if (previous == NULL)
+            preferred = NULL; /* The generated preference starts the first attempt. */
         if (attempt.score <= alpha) {
             /* The score is an upper bound. Keep the old midpoint as beta. */
             beta = (alpha + beta) / 2;

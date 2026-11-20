@@ -371,7 +371,9 @@ static void test_first_root_cutoff(void)
 
     /* Search the same first window twice with fresh histories. Giving Qb1
        priority is the only difference between the two attempts. */
-    struct Move queen_move = moves[6];
+    struct Move queen_move;
+    assert(first_root_move(&root, &queen_move));
+    expect_same_move(queen_move, moves[6]);
     for (int trial = 0; trial < 2; trial++) {
         const struct Move *preferred = trial == 0 ? NULL : &queen_move;
         struct SearchStats stats = { 0, 0 };
@@ -382,6 +384,33 @@ static void test_first_root_cutoff(void)
         expect_move(result, "g6b1");
         assert(stats.nodes == (trial == 0 ? 7 : 1));
     }
+}
+
+static void expect_first_root_move(struct Position position, const char *name)
+{
+    struct Move first;
+    assert(first_root_move(&position, &first));
+    expect_same_move(first, legal_move_named(position, name));
+}
+
+static void test_root_generation_order(void)
+{
+    struct Position position;
+    set_start_position(&position);
+    expect_first_root_move(position, "a2a3");
+    position.side_to_move = BLACK;
+    expect_first_root_move(position, "a7a6");
+
+    /* b2-b3 opens the bishop's line to a1. The last legal move replaces it. */
+    position = position_from_fen("7k/8/8/8/8/2b5/1P6/K2R4", "w", "-");
+    expect_first_root_move(position, "a1a2");
+    position = position_from_fen("1r3k1r/P5P1/8/8/8/8/8/K7", "w", "-");
+    expect_first_root_move(position, "a7b8q");
+    position = position_from_fen("k7/8/8/8/8/8/1p4p1/R5RK", "b", "-");
+    expect_first_root_move(position, "b2a1q");
+    /* Capturing the checking pawn en passant is a legal evasion. */
+    position = position_from_fen("7k/8/8/3pP3/4K3/8/8/8", "w", "d6");
+    expect_first_root_move(position, "e5d6");
 }
 
 static void test_aspiration_windows(void)
@@ -399,7 +428,7 @@ static void test_aspiration_windows(void)
     int success = search_iteration(&position, 1, NULL, &history, NULL, &stats, &result);
     assert(success && result.score == 0 && stats.nodes == 7 + 23);
     assert(stats.selective_depth == 1 && history.count == 1);
-    expect_move(result, "a1b1");
+    expect_move(result, "d1b1");
 
     struct SearchResult previous;
     previous.pv_length = 1;
@@ -1495,6 +1524,7 @@ int main(void)
     test_selective_depth();
     test_principal_variation_search();
     test_first_root_cutoff();
+    test_root_generation_order();
     test_aspiration_windows();
     test_mate_distance_pruning();
     test_capture_ordering();
