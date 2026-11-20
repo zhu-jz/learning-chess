@@ -2456,6 +2456,34 @@ from each report would fail the clock-zero example. Re-searches matter
 too: the C search counts another entry when it searches an already-made
 child again, while the reference charges a move only when it plays it.
 
+## Lesson 45 — Count a node when search plays a move
+
+Follow the forced **Ka2** from lesson 44. We start the counter at zero.
+After `apply_move` succeeds in the search loop, we add one. At clock 99
+the child is a draw, so the depth-one report shows exactly one node.
+A search that starts in checkmate plays no move and reports zero nodes.
+
+| Halfmove clock before Ka2 | C depth-one nodes | Reference depth-one nodes |
+| ---: | ---: | ---: |
+| 99 | 1 | 1 |
+| 0 | 1 | 2 |
+
+At clock zero the reference restarts the root search with a wider window.
+That loop plays Ka2 a second time. Our depth-one search starts with a
+full window and plays it once.
+
+Compare that retry with a re-search inside principal variation search.
+In the defended-rook test, White tries Qxd5 first and Black replies
+exd5. When White later tries Qb1, the narrow search finds that Qb1
+improves on Qxd5. The full-window search can examine the child that
+already has the queen on b1. Qb1 adds one to the counter across both
+calls. Any replies played in either call add their own nodes.
+
+To check the count by hand, run `position startpos` followed by
+`go depth 1`. White plays each of its 20 legal moves once, and Black
+has no captures in those positions. The report gives 20 nodes.
+The separate `seldepth` field still records the deepest ply reached.
+
 ## Build and try it
 
 From the project root in PowerShell, using MSYS2 UCRT64 GCC:

@@ -66,7 +66,7 @@ struct SearchResult {
 };
 
 struct SearchStats {
-    unsigned long long nodes; /* Total for the whole go command. */
+    unsigned long long nodes; /* Moves played by search during this go command. */
     int selective_depth;      /* Deepest visited ply in this iteration. */
 };
 
@@ -1503,11 +1503,7 @@ static int negamax(const struct Position *position, int depth, int ply,
                    struct MoveHints *hints,
                    struct SearchStats *stats, struct SearchResult *result)
 {
-    if (stats->nodes == ULLONG_MAX)
-        return 0;
-    stats->nodes++;
-    /* Count every visited node, including quiescence and terminal leaves.
-       Each played move adds one ply; the root is ply zero. */
+    /* Selective depth measures how far we reached, including terminal leaves. */
     if (ply > stats->selective_depth)
         stats->selective_depth = ply;
     result->pv_length = 0;
@@ -1624,10 +1620,12 @@ static int negamax(const struct Position *position, int depth, int ply,
         int child_depth = depth;
         if (child_depth > 0)
             child_depth--;
-        if (!apply_move(&child, moves[i])) {
+        if (stats->nodes == ULLONG_MAX || !apply_move(&child, moves[i])) {
             free(moves);
             return 0;
         }
+        /* Count the move once. A full-window re-search below reuses this child. */
+        stats->nodes++;
         if (history != NULL) {
             history->positions[history->count] = child;
             /* Positions reached inside search may end a cycle on return. */
