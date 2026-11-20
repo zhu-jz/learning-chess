@@ -1753,20 +1753,23 @@ static int search_iteration(const struct Position *position, int depth,
 {
     /* Start the first depth around an even score. The reference's 19-unit
        margin is about 9 centipawns (208 reference units per pawn). */
-    int alpha = -9;
-    int beta = 9;
+    int estimate = 0;
+    int margin = 9;
     const struct Move *preferred = NULL;
     if (previous != NULL) {
         /* Fifty centipawns is half a pawn in our material evaluation. */
-        alpha = previous->score - 50;
-        beta = previous->score + 50;
-        if (alpha < -INFINITE_SCORE)
-            alpha = -INFINITE_SCORE;
-        if (beta > INFINITE_SCORE)
-            beta = INFINITE_SCORE;
+        estimate = previous->score;
+        margin = 50;
         if (previous->pv_length > 0)
             preferred = &previous->pv[0];
     }
+
+    int alpha = estimate - margin;
+    int beta = estimate + margin;
+    if (alpha < -INFINITE_SCORE)
+        alpha = -INFINITE_SCORE;
+    if (beta > INFINITE_SCORE)
+        beta = INFINITE_SCORE;
 
     /* Nodes include earlier depths; selective depth includes all retries
        at this depth. Neither counter is reset inside the retry loop. */
@@ -1776,15 +1779,22 @@ static int search_iteration(const struct Position *position, int depth,
         if (!negamax(position, depth, 0, alpha, beta, -1, preferred, history, hints, stats, &attempt))
             return 0;
         if (attempt.score <= alpha) {
-            /* Fail low: the score is only an upper bound. Reopen this side. */
-            alpha = -INFINITE_SCORE;
+            /* The score is an upper bound. Keep the old midpoint as beta. */
+            beta = (alpha + beta) / 2;
+            alpha = attempt.score - margin;
+            if (alpha < -INFINITE_SCORE)
+                alpha = -INFINITE_SCORE;
         } else if (attempt.score >= beta) {
-            /* Fail high: the score is only a lower bound. */
-            beta = INFINITE_SCORE;
+            /* The score is a lower bound. Leave room above it. */
+            beta = attempt.score + margin;
+            if (beta > INFINITE_SCORE)
+                beta = INFINITE_SCORE;
         } else {
             *result = attempt;
             return 1;
         }
+        /* For the next failure, grow by a quarter plus one centipawn. */
+        margin += margin / 4 + 1;
     }
 }
 

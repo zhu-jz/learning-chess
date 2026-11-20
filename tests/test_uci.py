@@ -1219,7 +1219,7 @@ class UciTests(unittest.TestCase):
         self.send("position fen 7k/8/4p3/3r4/8/8/8/K2Q4 w - - 0 1\ngo depth 3\n")
         self.expect("info depth 1 seldepth 4 score cp 300 nodes 31 pv d1b1", timeout=60)
         self.expect("info depth 2 seldepth 4 score cp 300 nodes 128 pv d1b1 d5d2", timeout=60)
-        self.expect("info depth 3 seldepth 8 score cp 400 nodes 1226 pv d1e1 h8g7 e1e6", timeout=60)
+        self.expect("info depth 3 seldepth 6 score cp 400 nodes 1164 pv d1e1 h8g7 e1e6", timeout=60)
         # Depths one and two choose d1b1; depth three finds d1e1. Its score
         # of 400 exceeds the initial beta of 350, so its nodes include a retry.
         self.expect("bestmove d1e1")
@@ -1260,10 +1260,10 @@ class UciTests(unittest.TestCase):
 
     def test_root_preference_resets_with_each_go(self):
         self.send("position fen 7k/8/4p3/3r4/8/8/8/K2Q4 w - - 0 1\n")
-        self.expect_search(3, "cp", 400, "d1e1", nodes=1226)
+        self.expect_search(3, "cp", 400, "d1e1", nodes=1164)
         # The previous go ended with d1e1, but depth one must start afresh.
         self.expect_search(1, "cp", 300, "d1b1", nodes=31)
-        self.expect_search(3, "cp", 400, "d1e1", nodes=1226)
+        self.expect_search(3, "cp", 400, "d1e1", nodes=1164)
         self.send("position startpos\n")
         self.expect_search(1, "cp", 0, "b1a3", nodes=20)
         self.expect_position(START_POSITION)
@@ -1294,7 +1294,7 @@ class UciTests(unittest.TestCase):
         # Populate different killer and history hints in a tactical search,
         # then return to startpos. Every iteration must match the fresh search.
         self.send("position fen 7k/8/4p3/3r4/8/8/8/K2Q4 w - - 0 1\n")
-        self.expect_search(3, "cp", 400, "d1e1", nodes=1226)
+        self.expect_search(3, "cp", 400, "d1e1", nodes=1164)
         self.send("position startpos\ngo depth 4\n")
         self.assertEqual([self.read_search_info(depth) for depth in range(1, 5)], first)
         self.expect("bestmove b1a3")
@@ -1475,13 +1475,15 @@ class UciTests(unittest.TestCase):
 
     def test_mate_distance_prunes_after_finding_mate_in_one(self):
         self.send("position fen 7k/8/5KQ1/8/8/8/8/8 w - - 0 1\ngo depth 4\n")
-        for depth, seldepth, nodes in [(1, 2, 35), (2, 1, 58), (3, 1, 81), (4, 1, 104)]:
+        # At depth one the queen advantage and then the mate each exceed beta.
+        # The three attempts play 7, 16, and 28 moves.
+        for depth, seldepth, nodes in [(1, 2, 51), (2, 1, 74), (3, 1, 97), (4, 1, 120)]:
             self.assertEqual(self.read_search_info(depth, seldepth), ("mate", 1, nodes, ["g6g7"]))
         self.expect("bestmove g6g7")
         # Only normal search prunes by mate distance; depth one still sends
         # every child to quiescence, including when a fresh go follows.
         self.send("go depth 1\n")
-        self.assertEqual(self.read_search_info(1, 2), ("mate", 1, 35, ["g6g7"]))
+        self.assertEqual(self.read_search_info(1, 2), ("mate", 1, 51, ["g6g7"]))
         self.expect("bestmove g6g7")
         self.expect_state({"f6": "K", "g6": "Q", "h8": "k"})
         self.send("quit\n")

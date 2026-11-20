@@ -2547,6 +2547,38 @@ our existing 50-centipawn margin around it. Each `go` starts again at
 depth one. You can reproduce both Ka2 counts with the comparison command
 in lesson 46.
 
+## Lesson 48 — Use the returned score to widen the window
+
+In the forced Ka2 example at clock zero, C searches from −9 to 9 and
+returns −100. This **fail-low** score gives us an upper bound. For the
+retry we set alpha to the returned score minus the margin (−100 − 9)
+and beta to the midpoint of the old window (0). Ka2 returns −100 inside
+the new window of −109 to 0. The two attempts play one move each.
+
+For a **fail-high** score we keep alpha and set beta to the returned
+score plus the margin. Either kind of failure also grows the margin for
+the *following* retry. In C we add one quarter of the current margin,
+rounded down, plus one centipawn. The reference adds two internal units
+after the quarter, about one centipawn on our scale.
+
+Try `position fen 7k/8/5KQ1/8/8/8/8/8 w - - 0 1` and `go depth 1`.
+White has a queen on g6 and can mate on g7. The table follows each C
+attempt. Node counts are cumulative from the start of the search.
+
+| Attempt | C window | Returned score | C nodes | Reference nodes |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | −9 to 9 | 900 | 7 | 1 |
+| 2 | −9 to 909 | 99999 | 23 | 17 |
+| 3 | −9 to 100001 | 99999 | 51 | 43 |
+
+The first cutoff proves that White can keep at least a queen's worth of
+material. The second search finds Qg7#, whose mate score exceeds 909.
+By then the margin has grown to 12. Adding it to 99999 takes beta past
+the engine's score limit, so we cap beta at 100001. The third search
+can return the mate score inside the window. Both engines report
+`score mate 1` and `bestmove g6g7`. Their node counts differ from the
+first attempt onward.
+
 ## Build and try it
 
 From the project root in PowerShell, using MSYS2 UCRT64 GCC:
