@@ -1,4 +1,4 @@
-"""Trace the reference's opening move and each root search window to stderr."""
+"""Trace reference root windows to stderr. Add --moves to trace each played move."""
 
 from pathlib import Path
 import runpy
@@ -12,6 +12,13 @@ if __name__ == "__main__":
     from uci import uci_move
 
     original_search = search.search_node
+    original_do_move = search.do_move
+
+    def trace_move(position, move, gives_check):
+        ply = position.st.ply
+        original_do_move(position, move, gives_check)
+        print("play", position.nodes, "ply", ply, uci_move(move, position.chess960),
+              file=sys.stderr)
 
     def trace_search(position, alpha, beta, depth, cut_node, node_type):
         at_root = position.st.ply == 0 and node_type == search.PV
@@ -32,4 +39,8 @@ if __name__ == "__main__":
         return score
 
     search.search_node = trace_search
+    # Extra move-by-move output is optional for larger searches.
+    if "--moves" in sys.argv:
+        sys.argv.remove("--moves")
+        search.do_move = trace_move
     runpy.run_path(str(reference / "__main__.py"), run_name="__main__")

@@ -1631,6 +1631,11 @@ static int negamax(const struct Position *position, int depth, int ply,
         }
         /* Count the move once. A full-window re-search below reuses this child. */
         stats->nodes++;
+#ifdef TRACE_SEARCH_MOVES
+        char played[6];
+        move_to_string(moves[i], played);
+        fprintf(stderr, "play %llu ply %d %s\n", stats->nodes, ply, played);
+#endif
         if (history != NULL) {
             history->positions[history->count] = child;
             /* Positions reached inside search may end a cycle on return. */
@@ -1906,6 +1911,10 @@ static int search_iteration(const struct Position *position, int depth,
         struct SearchResult attempt;
         if (!negamax(position, depth, 0, alpha, beta, -1, preferred, history, hints, stats, &attempt))
             return 0;
+#ifdef TRACE_SEARCH_MOVES
+        fprintf(stderr, "root-window %d %d %d %d nodes %llu\n",
+                depth, alpha, beta, attempt.score, stats->nodes);
+#endif
         if (previous == NULL)
             preferred = NULL; /* The generated preference starts the first attempt. */
         if (attempt.score <= alpha) {

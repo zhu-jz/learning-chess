@@ -2657,6 +2657,52 @@ second attempt begins. C searches Qb1, then those six king moves, before
 it reaches Qg7#. Both engines finish with `score mate 1` and
 `bestmove g6g7`.
 
+## Lesson 51 — Account for every move in the second attempt
+
+After Qb1 beats the first window, the engines restart the depth-one
+search. C opens its window to −9 through 909 cp. The reference uses −19
+through 2409 in its internal units. Both try Qb1 again. Count from one
+at the start of this retry so the first attempt's node stays out of the
+comparison.
+
+| Moves played, in order | C nodes | Reference nodes |
+| --- | ---: | ---: |
+| Qb1 | 1 | 1 |
+| Ke5, Kf5, Kg5, Ke6, Ke7, Kf7 | 6 | 0 |
+| Qg1, Qc2, Qg2, Qd3, Qg3, Qe4, Qg4, Qf5, Qg5 | 9 | 9 |
+| Qh5+ Kg8 | 2 | 2 |
+| Qh6+ Kg8 | 2 | 2 |
+| Qf7 | 1 | 1 |
+| Qg7# | 1 | 1 |
+| **Second attempt** | **22** | **16** |
+
+The kings start on f6 and h8. After Qb1, C's quiet moves with equal
+ordering scores keep their board-scan order, which puts the six moves
+from f6 ahead of the remaining moves from g6. Each king move leaves the
+queen on g6 covering every escape square, so Black is stalemated and
+there is no reply to count. The reference's quiet generator emits queen
+moves before king moves. Its search reaches Qg7# and cuts off before
+trying any king move.
+
+Both engines play 14 queen moves and two replies. In particular, each
+checking line with Kg8 costs two nodes, one for each side's move.
+Counting the whole depth-one search gives 51 nodes in C and 43 in the
+reference. Six of that eight-node difference arise here and two in the
+third attempt.
+
+To replay the comparison, build a copy with move tracing enabled. It
+prints a record when search counts a move. A second search of an
+already-played child adds a record only if it plays another move.
+
+```powershell
+& C:\msys64\ucrt64\bin\gcc.exe -std=c11 -Wall -Wextra -Wpedantic -O0 -g -DTRACE_SEARCH_MOVES main.c -o build\trace-moves.exe
+.\.venv\Scripts\python.exe -B tests\compare_retry_moves.py build\trace-moves.exe
+```
+
+The comparison prints both sequences, indents Black's replies, and
+checks that inserting the six king moves after Qb1 reproduces the
+entire C trace for the retry.
+
 ## Build and try it
 
 From the project root in PowerShell, using MSYS2 UCRT64 GCC:
