@@ -33,21 +33,20 @@ def check_third_attempt(ours, theirs, control):
         expected.append(event)
         if event in [(0, "g6h5"), (0, "g6h6")]:
             expected.append((1, "h8g8"))
-    if len(reference) != 26 or len(actual) != 28 or actual != expected:
-        raise AssertionError("Expected C to play one extra Kg8 after each queen check")
+    if len(reference) != 26 or actual != reference:
+        raise AssertionError("Expected all 26 moves to match on the third attempt")
 
     # Ignore the two table hits in a fresh reference search. The experiment
-    # must reproduce the C trace and preserve the searches leading up to it.
+    # should restore the two evasions while preserving the earlier searches.
     misses = [line for line in control.stderr.splitlines() if line.startswith("forced-miss ")]
     if misses != ["forced-miss g6h5 bound 2 value -1946", "forced-miss g6h6 bound 2 value -1884"]:
         raise AssertionError(f"Unexpected cached bounds: {misses}")
     for number in (1, 2):
         if attempt_moves(control.stderr, number) != attempt_moves(theirs.stderr, number):
             raise AssertionError(f"Control changed attempt {number}")
-    if attempt_moves(control.stderr, 3) != actual:
-        raise AssertionError("Expected both forced misses to restore the full C move sequence")
-    print("Third attempt: C 28 nodes, reference 26, reference with two misses 28.")
-    print("Both extra replies are h8g8, after g6h5 and g6h6.")
+    if len(expected) != 28 or attempt_moves(control.stderr, 3) != expected:
+        raise AssertionError("Expected a forced miss to add Kg8 after each queen check")
+    print("Third attempt: C 26 nodes, reference 26, reference with two misses 28.")
 
 
 def compare(engine):
@@ -58,6 +57,8 @@ def compare(engine):
     bench = position + "bench 1 1 1 current depth\n"
     theirs = run(trace, bench)
     control = run(trace + ["--miss-after-checks"], bench)
+    if attempt_moves(ours.stderr, 1) != [(0, "g6b1")] or attempt_moves(theirs.stderr, 1) != [(0, "g6b1")]:
+        raise AssertionError("Expected both first attempts to play only Qb1")
     actual = attempt_moves(ours.stderr, 2)
     shared = attempt_moves(theirs.stderr, 2)
 
@@ -74,6 +75,10 @@ def compare(engine):
     if actual != shared:
         raise AssertionError("Expected the same moves at the same plies throughout the retry")
     check_third_attempt(ours, theirs, control)
+    for output in (ours.stdout, theirs.stdout):
+        if not any("score mate 1 nodes 43" in line and line.endswith(" pv g6g7")
+                   for line in output.splitlines() if line.startswith("info depth 1 ")):
+            raise AssertionError("Expected mate in one, 43 nodes and the Qg7 principal variation")
     for output in (ours.stdout, theirs.stdout, control.stdout):
         if "bestmove g6g7" not in output.splitlines():
             raise AssertionError("Expected every completed search to choose Qg7")

@@ -65,9 +65,26 @@ struct SearchResult {
     struct Move pv[MAX_SEARCH_PLY];
 };
 
+enum { QUIESCENCE_SLOTS = 64 };
+struct QuiescenceEntry {
+    struct Position position;
+    int ply;
+    int score;
+    int lower_bound;
+    /* Earlier search positions still within reach of the repetition rule. */
+    struct Position parents[MAX_SEARCH_PLY];
+};
+
+struct QuiescenceTable {
+    struct QuiescenceEntry entries[QUIESCENCE_SLOTS];
+    int count;
+    int next;
+};
+
 struct SearchStats {
     unsigned long long nodes; /* Moves played by search during this go command. */
     int selective_depth;      /* Deepest visited ply in this iteration. */
+    struct QuiescenceTable *table;
 };
 
 /* One row answers: after this particular move, which replies worked? */
@@ -1506,6 +1523,60 @@ static void order_quiet_replies(const struct Position *position, struct Move mov
     search_move_first(&moves[first_quiet], count - first_quiet, &killers[0]);
 }
 
+/* One go has a fixed root and game history. Compare the reversible part
+   of the search path too: a future reply might repeat one of its parents. */
+static int quiescence_parent_count(const struct Position *position, int ply)
+{
+    if (ply <= 1)
+        return 0;
+    return position->halfmove_clock < ply - 1 ? position->halfmove_clock : ply - 1;
+}
+
+static int quiescence_cutoff(const struct QuiescenceTable *table, const struct Position *position,
+                             int ply, const struct PositionHistory *history, int alpha, int beta,
+                             int *score)
+{
+    int parents = quiescence_parent_count(position, ply);
+    for (int i = 0; i < table->count; i++) {
+        const struct QuiescenceEntry *entry = &table->entries[i];
+        if (entry->lower_bound && entry->score < beta)
+            continue;
+        if (!entry->lower_bound && entry->score > alpha)
+            continue;
+        /* Matching the ply preserves mate distance and the recursion limit. */
+        if (entry->ply != ply || entry->position.halfmove_clock != position->halfmove_clock
+            || !same_repetition_position(&entry->position, position))
+            continue;
+        int j = 0;
+        while (j < parents && same_repetition_position(&entry->parents[j],
+                                                       &history->positions[history->count - 2 - j]))
+            j++;
+        if (j == parents) {
+            *score = entry->score;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void save_quiescence_bound(struct QuiescenceTable *table, const struct Position *position,
+                                  int ply, const struct PositionHistory *history, int score, int beta)
+{
+    struct QuiescenceEntry *entry = &table->entries[table->next];
+    entry->position = *position;
+    entry->ply = ply;
+    entry->score = score;
+    /* A beta cutoff proves a lower bound. After a completed move loop
+       the score is an upper bound (an exact score is also an upper bound). */
+    entry->lower_bound = score >= beta;
+    int parents = quiescence_parent_count(position, ply);
+    for (int j = 0; j < parents; j++)
+        entry->parents[j] = history->positions[history->count - 2 - j];
+    table->next = (table->next + 1) % QUIESCENCE_SLOTS;
+    if (table->count < QUIESCENCE_SLOTS)
+        table->count++;
+}
+
 /* Scores belong to the side to move. Alpha is the threshold to improve;
    beta is the threshold where the caller can reject this branch.
    At depth zero, the same recursion becomes a quiescence search. */
@@ -1573,6 +1644,15 @@ static int negamax(const struct Position *position, int depth, int ply,
         }
     }
 
+    struct QuiescenceTable *table = NULL;
+    if (depth == 0 && history != NULL)
+        table = stats->table;
+    /* A scout needs only a bound. A wider search builds its own line. */
+    if (table != NULL && beta == alpha + 1
+        && quiescence_cutoff(table, position, ply, history, alpha, beta, &result->score)) {
+        free(moves);
+        return 1;
+    }
     result->score = -INFINITE_SCORE;
     int in_check = is_in_check(position, position->side_to_move);
     if (depth == 0 && !in_check) {
@@ -1718,6 +1798,8 @@ static int negamax(const struct Position *position, int depth, int ply,
             break;
         }
     }
+    if (table != NULL)
+        save_quiescence_bound(table, position, ply, history, result->score, beta);
     /* A cutoff or a completed improvement supplies a best move. An upper
        bound alone does not. A failed child returned before reaching here. */
     if (depth > 0 && hints != NULL && alpha > starting_alpha) {
@@ -1973,8 +2055,10 @@ static void read_go_command(const struct Position *position, const struct Positi
     static struct MoveHints hints; /* One worker; keep its large tables off the call stack. */
     clear_move_hints(&hints);
     /* Count all work for this go command, including the shallower searches. */
-    struct SearchStats stats;
-    stats.nodes = 0;
+    static struct QuiescenceTable table;
+    table.count = 0;
+    table.next = 0;
+    struct SearchStats stats = { 0, 0, &table };
     struct SearchResult result;
     for (int current_depth = 1; current_depth <= depth; current_depth++) {
         /* Reuse only the last completed iteration of this go command. */

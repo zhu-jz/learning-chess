@@ -2767,6 +2767,46 @@ To reproduce the comparison with the trace build, run
 `python tests/compare_retry_moves.py build/trace-moves.exe` using the
 project Python environment.
 
+## Lesson 54 — Remember a quiescence bound
+
+Consider Black's turn after Qh5+ in the Qg7# fixture. On the second
+attempt C tries Kg8 and establishes that Black can score at least −900
+centipawns. On the third attempt White has already found mate in one.
+Black only needs to beat a very low threshold. The saved lower bound
+answers that question, and search returns before playing Kg8 again.
+The same reasoning applies after Qh6+.
+
+A fresh `go` starts with an empty table of 64 entries. A completed
+quiescence move loop records a lower bound when it reaches beta.
+Otherwise it records an upper bound. The table fills in order and
+replaces its oldest entry when full. For a one-point search window, a
+matching entry can end the search under the following conditions.
+
+| Saved result | Return the saved score when |
+| --- | --- |
+| Lower bound | The score is at least beta |
+| Upper bound | The score is at most alpha |
+
+For example, a lower bound of −900 is enough when beta is −900. Raise
+beta to −899 and Black must search. A wider window also searches the
+moves so it can build a principal variation.
+
+The table compares the actual board, side to move, castling and en
+passant rights, and halfmove clock. It also checks the ply, since the
+distance to mate and the remaining recursion limit depend on it.
+Two paths can reach the same board yet offer different opportunities
+to draw by repetition. Each entry therefore remembers the earlier
+search positions since the last pawn move or capture, back to the
+first child of the root. The game history and root are shared for the
+whole `go`. Terminal and draw checks still run before the lookup.
+
+In the depth-one Qg7# replay, C and the reference now play the same
+moves in the same order on all three attempts. They spend **1, 16, and
+26 nodes** and report `score mate 1`, `nodes 43`, and `pv g6g7`. The
+lesson 53 control still adds two Kg8 replies when the reference treats
+the corresponding lookups as misses. C reports selective depth 2 for
+this fixture and the reference reports 1.
+
 ## Build and try it
 
 From the project root in PowerShell, using MSYS2 UCRT64 GCC:

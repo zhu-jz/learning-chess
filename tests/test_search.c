@@ -173,7 +173,7 @@ static void test_repetition(void)
         history.count++;
         assert(is_repetition(&a, &history) == (i == 4));
     }
-    struct SearchStats stats = { 0, 0 };
+    struct SearchStats stats = { 0 };
     struct SearchResult result;
     success = negamax(&a, 0, 5, -INFINITE_SCORE, INFINITE_SCORE,
                       -1, NULL, &history, NULL, &stats, &result);
@@ -239,7 +239,7 @@ static void test_repetition(void)
 
 static void test_selective_depth(void)
 {
-    struct SearchStats stats = { 0, 0 };
+    struct SearchStats stats = { 0 };
     struct SearchResult result;
     struct Position position = position_from_fen("7k/8/4p3/3r4/8/8/8/K2Q4", "w", "-");
 
@@ -301,7 +301,7 @@ static void test_principal_variation_search(void)
     history.count = 0;
     remember_position(&history, &position);
     prepare_repetition_history(&history);
-    struct SearchStats stats = { 0, 0 };
+    struct SearchStats stats = { 0 };
     struct SearchResult result;
 
     struct Move preferred = legal_move_named(position, "d1d5");
@@ -376,7 +376,7 @@ static void test_first_root_cutoff(void)
     expect_same_move(queen_move, moves[6]);
     for (int trial = 0; trial < 2; trial++) {
         const struct Move *preferred = trial == 0 ? NULL : &moves[0];
-        struct SearchStats stats = { 0, 0 };
+        struct SearchStats stats = { 0 };
         struct SearchResult result;
         clear_move_hints(&hints);
         int success = negamax(&root, 1, 0, -9, 9, -1, preferred, NULL, &hints, &stats, &result);
@@ -419,6 +419,56 @@ static void test_root_generation_order(void)
     expect_first_root_move(position, "e5d6");
 }
 
+static void expect_queen_check_nodes(struct Position *position, int ply, struct PositionHistory *history,
+                                    struct QuiescenceTable *table, int alpha, int beta,
+                                    unsigned long long expected_nodes)
+{
+    struct SearchStats stats = { 0, 0, table };
+    struct SearchResult result;
+    int success = negamax(position, 0, ply, alpha, beta, -1, NULL, history, NULL, &stats, &result);
+    assert(success && result.score == -900 && stats.nodes == expected_nodes);
+    if (expected_nodes == 0)
+        assert(result.pv_length == 0);
+    else
+        expect_move(result, "h8g8");
+}
+
+static void test_quiescence_bounds(void)
+{
+    /* Black has one quiet evasion after Qh5+. A searched reply costs one
+       node. A table cutoff at the same position costs zero. */
+    struct Position root = position_from_fen("7k/8/5KQ1/8/8/8/8/8", "w", "-");
+    struct Position checked = root;
+    assert(play_uci_move(&checked, "g6h5"));
+    struct PositionHistory history = { 0 };
+    remember_position(&history, &root);
+    remember_position(&history, &checked);
+    static struct QuiescenceTable table;
+    expect_queen_check_nodes(&checked, 1, &history, &table, -901, -900, 1);
+    expect_queen_check_nodes(&checked, 1, &history, &table, -901, -900, 0); /* Lower = beta. */
+    expect_queen_check_nodes(&checked, 1, &history, &table, -900, -899, 1); /* Lower too low. */
+    expect_queen_check_nodes(&checked, 1, &history, &table, -900, -899, 0); /* Upper = alpha. */
+    expect_queen_check_nodes(&checked, 1, &history, &table, -1000, 0, 1);   /* Need the PV. */
+
+    table.count = table.next = 0;
+    expect_queen_check_nodes(&checked, 1, &history, &table, -900, -899, 1);
+    expect_queen_check_nodes(&checked, 1, &history, &table, -901, -900, 1); /* Upper too high. */
+
+    /* Two different White parents can reach the same checked board.
+       The saved score belongs to its own reversible history and ply. */
+    struct Position other_parent = position_from_fen("7k/8/5K2/8/6Q1/8/8/8", "w", "-");
+    history.count = 3;
+    history.positions[1] = root;
+    history.positions[2] = checked;
+    expect_queen_check_nodes(&checked, 2, &history, &table, -901, -900, 1);
+    expect_queen_check_nodes(&checked, 2, &history, &table, -901, -900, 0);
+    history.positions[1] = other_parent;
+    expect_queen_check_nodes(&checked, 2, &history, &table, -901, -900, 1);
+    checked.halfmove_clock++;
+    history.positions[2] = checked;
+    expect_queen_check_nodes(&checked, 2, &history, &table, -901, -900, 1);
+}
+
 static void test_aspiration_windows(void)
 {
     /* Every root move reaches the fifty-move threshold, making the true
@@ -429,7 +479,7 @@ static void test_aspiration_windows(void)
     history.count = 0;
     remember_position(&history, &position);
     prepare_repetition_history(&history);
-    struct SearchStats stats = { 7, MAX_SEARCH_PLY };
+    struct SearchStats stats = { 7, MAX_SEARCH_PLY, NULL };
     struct SearchResult result;
     int success = search_iteration(&position, 1, NULL, &history, NULL, &stats, &result);
     assert(success && result.score == 0 && stats.nodes == 7 + 23);
@@ -497,7 +547,7 @@ static void test_mate_distance_pruning(void)
 {
     struct Position position;
     set_start_position(&position);
-    struct SearchStats stats;
+    struct SearchStats stats = { 0 };
     struct SearchResult result;
     int plies[] = { 1, 5, MAX_SEARCH_PLY - 1 };
 
@@ -624,7 +674,7 @@ static void test_capture_history(void)
     order_moves(&position, moves, 2, &hints);
     expect_same_move(moves[0], pawn);
 
-    struct SearchStats stats = { 0, 0 };
+    struct SearchStats stats = { 0 };
     struct SearchResult result;
     int success = negamax(&position, 2, 0, -101, -100, -1, &queen, NULL, &hints, &stats, &result);
     assert(success && result.score >= -100);
@@ -667,7 +717,7 @@ static void test_quiescence_capture_history(void)
     struct Position position = position_from_fen("7k/8/8/8/3Q2r1/4p3/3r4/K7", "w", "-");
     struct Move winning = legal_move_named(position, "d4g4");
     clear_move_hints(&hints);
-    struct SearchStats stats = { 0, 0 };
+    struct SearchStats stats = { 0 };
     struct SearchResult result;
     int success = negamax(&position, 0, 0, -INFINITE_SCORE, 100, -1, NULL, NULL,
                           &hints, &stats, &result);
@@ -742,7 +792,7 @@ static void test_previous_move_evasions(void)
     assert(apply_move(&checked, rh1));
     struct Move kg7 = legal_move_named(checked, "h8g7");
     struct Move kg8 = legal_move_named(checked, "h8g8");
-    struct SearchStats stats = { 0, 0 };
+    struct SearchStats stats = { 0 };
     struct SearchResult result;
     clear_move_hints(&hints);
 
@@ -797,7 +847,7 @@ static void test_previous_move_quiets(void)
         clear_move_hints(&hints);
         hints.quiet_history[BLACK][a6.from][a6.to] = 3;
         hints.continuation[WHITE_PAWN][e4.to].score[BLACK_PAWN][h6.to] = 2;
-        struct SearchStats stats = { 0, 0 };
+        struct SearchStats stats = { 0 };
         struct SearchResult result;
         assert(negamax(&start, 2, 0, -1, 0, -1, &first[i], NULL, &hints, &stats, &result));
         assert(result.score == 0 && result.pv_length >= 2);
@@ -828,7 +878,7 @@ static void test_two_plies_back(void)
         hints.quiet_history[BLACK][a6.from][a6.to] = HISTORY_LIMIT;
         hints.continuation[BLACK_PAWN][a6.to].score[WHITE_PAWN][a3.to] = 1;
         hints.continuation[WHITE_PAWN][e4.to].score[WHITE_PAWN][h3.to] = 3;
-        struct SearchStats stats = { 0, 0 };
+        struct SearchStats stats = { 0 };
         struct SearchResult result;
         assert(negamax(&start, 3, 0, -1, 0, -1, &first[i], NULL, &hints, &stats, &result));
         assert(result.score == 0 && result.pv_length >= 3);
@@ -844,7 +894,7 @@ static void test_two_plies_back(void)
     struct ReplyHistory *older = &hints.continuation[WHITE_PAWN][e4.to];
     hints.replies_at_ply[1] = older;
     hints.replies_at_ply[2] = last;
-    struct SearchStats stats = { 0, 0 };
+    struct SearchStats stats = { 0 };
     struct SearchResult result;
     assert(negamax(&position, 3, 2, -5001, -5000, a6.to, &h3, NULL, &hints, &stats, &result));
     expect_same_move(result.pv[0], h3);
@@ -984,7 +1034,7 @@ static void test_killer_search(void)
     set_start_position(&position);
     struct Move preferred = legal_move_named(position, "e2e4");
     clear_move_hints(&hints);
-    struct SearchStats stats = { 0, 0 };
+    struct SearchStats stats = { 0 };
     struct SearchResult result;
     int success = negamax(&position, 1, 5, -1, 0, -1, &preferred, NULL, &hints, &stats, &result);
     assert(success && stats.nodes == 1);
@@ -1069,7 +1119,7 @@ static void test_countermoves(void)
     struct Move reply = legal_move_named(position, "h7h5");
     struct Move alternative = legal_move_named(position, "a7a6");
     clear_move_hints(&hints);
-    struct SearchStats stats = { 0, 0 };
+    struct SearchStats stats = { 0 };
     struct SearchResult result;
 
     /* Force a quiet cutoff after e2e4, then look for the same reply at
@@ -1121,7 +1171,7 @@ static void test_quiet_history(void)
     }
 
     /* A cutoff at ply three helps at ply five, which has no killer yet. */
-    struct SearchStats stats = { 0, 0 };
+    struct SearchStats stats = { 0 };
     struct SearchResult result;
     int success = negamax(&position, 1, 3, -1, 0, -1, &pawn, NULL, &hints, &stats, &result);
     assert(success && hints.quiet_history[WHITE][12][28] == 1);
@@ -1272,7 +1322,7 @@ static void test_history_penalties(void)
     struct Move ka2 = legal_move_named(position, "a1a2");
     remember_killer(&hints, 0, ka2);
     remember_killer(&hints, 0, kb1);
-    struct SearchStats stats = { 0, 0 };
+    struct SearchStats stats = { 0 };
     struct SearchResult result;
     int success = negamax(&position, 1, 0, -INFINITE_SCORE, 200,
                           -1, &preferred, NULL, &hints, &stats, &result);
@@ -1347,7 +1397,7 @@ static void test_history_penalties(void)
 
 int main(void)
 {
-    struct SearchStats stats = { 0, 0 };
+    struct SearchStats stats = { 0 };
     struct Position position;
     struct SearchResult result;
 
@@ -1532,6 +1582,7 @@ int main(void)
     test_first_root_cutoff();
     test_root_generation_order();
     test_aspiration_windows();
+    test_quiescence_bounds();
     test_mate_distance_pruning();
     test_capture_ordering();
     test_deferred_captures();
