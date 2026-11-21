@@ -1772,6 +1772,10 @@ static int negamax(const struct Position *position, int depth, int ply, int node
             return 0;
         }
         int score = -reply.score;
+#ifdef TRACE_SEARCH_MOVES
+        if (ply == 0)
+            fprintf(stderr, "root-score %s %d\n", played, score);
+#endif
         /* The first root move supplies a line. Save a new depth when
            another move beats alpha. UCI counts the root as level one. */
         if (ply == 0 && depth > 0 && (i == 0 || score > alpha))

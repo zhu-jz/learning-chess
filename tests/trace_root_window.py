@@ -16,6 +16,9 @@ if __name__ == "__main__":
     original_do_move = search.do_move
     original_probe = search.tt_probe
     miss_after_checks = "--miss-after-checks" in sys.argv
+    trace_scores = "--root-scores" in sys.argv
+    if trace_scores:
+        sys.argv.remove("--root-scores")
     checked_positions = {}
 
     def trace_move(position, move, gives_check):
@@ -43,9 +46,12 @@ if __name__ == "__main__":
         # On the first child's arrival, the root frame still holds the move
         # that search actually played. The node counter includes that move.
         first_child = position.st.ply == 1 and position.nodes == 1
-        if first_child:
+        root_child = trace_scores and position.st.ply == 1
+        if first_child or root_child:
             move = position.stack[position.st_idx - 1].currentMove
         score = original_search(position, alpha, beta, depth, cut_node, node_type)
+        if root_child:
+            print("root-score", uci_move(move, position.chess960), -score, file=sys.stderr)
         if first_child:
             print("first-child", uci_move(move, position.chess960), "root-score", -score,
                   "nodes", position.nodes, file=sys.stderr)

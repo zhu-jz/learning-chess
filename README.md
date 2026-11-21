@@ -2872,6 +2872,53 @@ The trace command in lesson 55 checks the first two rows. Its only
 recorded rise in C occurs at node 44, when the second iteration
 plays Qg7#.
 
+## Lesson 57 — Why does the opening take 35 nodes?
+
+From the starting position, both engines try `a2a3`, `b2b3`, `c2c3`,
+and `d2d3` in that order. All four leave the material balance even.
+Our C evaluator returns zero for each of them, as it does for all 20
+legal moves. The first move wins the tie, so C prints `bestmove a2a3`
+after one pass.
+
+The reference evaluator uses the pieces and their squares as inputs
+to a small neural network. The difference shows up on the first move,
+before the engines have had a chance to order their moves differently.
+Here are the scores each search returned from White's point of view.
+One pawn is 100 cp in UCI and 208 units inside the reference.
+
+| Move | C (cp) | Reference (internal units) |
+| --- | ---: | ---: |
+| a2a3 | 0 | −67 |
+| b2b3 | 0 | −42 |
+| c2c3 | 0 | −49 |
+| d2d3 | 0 | +28 |
+
+The reference starts with an upper bound of 19. On the fourth move,
+`d2d3` returns 28. That is enough to stop this attempt, widen the
+window, and try `d2d3` first on the next pass. Two more moves exceed
+the new upper bounds in turn.
+
+| Reference attempt | Window (internal units) | Best move on this pass | Returned score | Moves played | Cumulative nodes |
+| ---: | --- | --- | ---: | ---: | ---: |
+| 1 | −19 to 19 | d2d3 | 28 | 4 | 4 |
+| 2 | −19 to 47 | e2e3 | 90 | 2 | 6 |
+| 3 | −19 to 115 | d2d4 | 150 | 9 | 15 |
+| 4 | −19 to 183 | e2e4 | 182 | 20 | 35 |
+
+On the fourth pass, `e2e4` scores 182, one unit below the upper bound.
+The reference finishes all 20 moves and prints `score cp 87`. Every
+counted node on these four passes is a move played by White. A scout
+and its full-window re-search can inspect the same child twice, but
+the move is played only once. The first three passes account for the
+entire difference between 20 and 35 nodes.
+
+To see each move and its returned score in search order, rebuild the
+trace executable as in lesson 51 and run:
+
+```powershell
+.\.venv\Scripts\python.exe -B tests\compare_opening.py build\trace-moves.exe
+```
+
 ## Build and try it
 
 From the project root in PowerShell, using MSYS2 UCRT64 GCC:
