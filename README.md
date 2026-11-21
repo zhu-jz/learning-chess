@@ -2842,6 +2842,36 @@ checks the reference worker, selected move, and UCI reports separately.
 .\.venv\Scripts\python.exe -B tests\compare_seldepth.py build\trace-moves.exe
 ```
 
+## Lesson 56 — Save selective depth with the root move
+
+Try the Qg7# position from lesson 55 again. At depth one, the root
+is the only PV node with search depth left. Black's reply to Qh5+
+still counts as a node in quiescence. The deepest qualifying ply is
+zero, so the engine reports `seldepth 1`.
+
+At depth two, Qg7# is searched first. Black enters a PV node at ply
+one with a ply of search left. The engine records that visit before
+checking whether Black has a legal move. The PV is still just `g6g7`,
+and the report now reads `seldepth 2`.
+
+`negamax` carries a node type to tell these visits apart. A scout
+asks whether a move beats alpha. The first move at a PV node inherits
+the PV role, as does a later move when it earns a full-window re-search.
+`deepest_pv_ply` remembers the deepest positive-depth PV visit across
+all attempts at the current depth. The first root move saves that
+value plus one in the result. A move that beats alpha replaces it.
+
+| Search depth | Best move | Score | Nodes in both engines | UCI seldepth in both engines |
+| ---: | --- | --- | ---: | ---: |
+| 1 | g6g7 | mate 1 | 43 | 1 |
+| 2 | g6g7 | mate 1 | 66 | 2 |
+| 3 | g6g7 | mate 1 | 89 | 2 |
+| 4 | g6g7 | mate 1 | 112 | 2 |
+
+The trace command in lesson 55 checks the first two rows. Its only
+recorded rise in C occurs at node 44, when the second iteration
+plays Qg7#.
+
 ## Build and try it
 
 From the project root in PowerShell, using MSYS2 UCRT64 GCC:

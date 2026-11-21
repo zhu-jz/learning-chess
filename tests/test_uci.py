@@ -162,7 +162,7 @@ class UciTests(unittest.TestCase):
         selective_depth = int(words[4])
         pv = words[11:]
         self.assertLessEqual(selective_depth, 64)
-        self.assertLessEqual(len(pv), selective_depth)
+        self.assertLessEqual(len(pv), 64)
         if seldepth is not None:
             self.assertEqual(selective_depth, seldepth)
         return words[6], int(words[7]), int(words[9]), pv
@@ -1203,30 +1203,30 @@ class UciTests(unittest.TestCase):
     def test_iterative_deepening_reports_all_iterations(self):
         self.send("go depth 4\n")
         line = ["a2a3", "a7a5", "a1a2", "a5a4"]
-        for depth, seldepth, nodes in [(1, 1, 20), (2, 4, 81), (3, 5, 608), (4, 6, 2152)]:
-            self.assertEqual(self.read_search_info(depth, seldepth), ("cp", 0, nodes, line[:depth]))
+        for depth, nodes in [(1, 20), (2, 81), (3, 608), (4, 2152)]:
+            self.assertEqual(self.read_search_info(depth, seldepth=depth), ("cp", 0, nodes, line[:depth]))
         self.expect("bestmove a2a3")
         self.expect_position(START_POSITION)
         # A new go command starts counting from zero again.
         self.send("go depth 2\n")
         self.expect("info depth 1 seldepth 1 score cp 0 nodes 20 pv a2a3", timeout=60)
-        self.expect("info depth 2 seldepth 4 score cp 0 nodes 81 pv a2a3 a7a5", timeout=60)
+        self.expect("info depth 2 seldepth 2 score cp 0 nodes 81 pv a2a3 a7a5", timeout=60)
         self.expect("bestmove a2a3")
         self.send("quit\n")
         self.expect_exit()
 
     def test_iterative_deepening_uses_the_deepest_result(self):
         self.send("position fen 7k/8/4p3/3r4/8/8/8/K2Q4 w - - 0 1\ngo depth 3\n")
-        self.expect("info depth 1 seldepth 4 score cp 300 nodes 31 pv d1b1", timeout=60)
-        self.expect("info depth 2 seldepth 4 score cp 300 nodes 123 pv d1b1 d5d2", timeout=60)
-        self.expect("info depth 3 seldepth 6 score cp 400 nodes 1049 pv d1e1 h8g7 e1e6", timeout=60)
+        self.expect("info depth 1 seldepth 1 score cp 300 nodes 31 pv d1b1", timeout=60)
+        self.expect("info depth 2 seldepth 2 score cp 300 nodes 123 pv d1b1 d5d2", timeout=60)
+        self.expect("info depth 3 seldepth 3 score cp 400 nodes 1049 pv d1e1 h8g7 e1e6", timeout=60)
         # Depths one and two choose d1b1; depth three finds d1e1. Its score
         # of 400 exceeds the initial beta of 350, so its nodes include a retry.
         self.expect("bestmove d1e1")
         self.send("position fen 7k/8/5K2/6Q1/8/8/8/8 b - - 0 1\ngo depth 3\n")
         self.expect("info depth 1 seldepth 1 score cp -900 nodes 2 pv h8h7", timeout=60)
-        self.expect("info depth 2 seldepth 3 score mate -1 nodes 29 pv h8h7 g5g7", timeout=60)
-        self.expect("info depth 3 seldepth 2 score mate -1 nodes 31 pv h8h7 g5g7", timeout=60)
+        self.expect("info depth 2 seldepth 2 score mate -1 nodes 29 pv h8h7 g5g7", timeout=60)
+        self.expect("info depth 3 seldepth 3 score mate -1 nodes 31 pv h8h7 g5g7", timeout=60)
         self.expect("bestmove h8h7")
         self.send("quit\n")
         self.expect_exit()
@@ -1248,12 +1248,12 @@ class UciTests(unittest.TestCase):
                 (1, 900, 28, ["d1b1"]),
                 (2, 0, 121, ["d1b1", "h8g7"]),
                 (3, 0, 168, ["d1b1", "h8g7"])]:
-            self.assertEqual(self.read_search_info(depth, seldepth=2), ("cp", score, nodes, pv))
+            self.assertEqual(self.read_search_info(depth, seldepth=depth), ("cp", score, nodes, pv))
         self.expect("bestmove d1b1")
         self.expect_state({"a1": "K", "d1": "Q", "h8": "k"}, halfmove=98)
         # A new go starts from the same estimate and counts both attempts again.
         self.send("go depth 1\n")
-        self.assertEqual(self.read_search_info(1, seldepth=2), ("cp", 900, 28, ["d1b1"]))
+        self.assertEqual(self.read_search_info(1, seldepth=1), ("cp", 900, 28, ["d1b1"]))
         self.expect("bestmove d1b1")
         self.send("quit\n")
         self.expect_exit()
@@ -1270,15 +1270,14 @@ class UciTests(unittest.TestCase):
         self.send("quit\n")
         self.expect_exit()
 
-    def test_selective_depth_resets_for_each_iteration(self):
+    def test_selective_depth_on_a_mate_in_two(self):
         self.send("position fen 7k/8/5K2/4Q3/8/8/8/8 w - - 0 1\ngo depth 4\n")
-        # Depth four keeps the mate-in-two PV, but must not retain depth
-        # three's selective depth of four after its deepest branch changes.
+        # At depth four, the final checkmated position itself has positive depth.
         for depth, seldepth, kind, score, nodes, pv in [
-                (1, 2, "cp", 900, 41, ["e5a1"]),
+                (1, 1, "cp", 900, 41, ["e5a1"]),
                 (2, 2, "cp", 900, 102, ["e5a1", "h8h7"]),
-                (3, 4, "mate", 2, 466, ["e5g3", "h8h7", "g3g7"]),
-                (4, 3, "mate", 2, 527, ["e5g3", "h8h7", "g3g7"])]:
+                (3, 3, "mate", 2, 466, ["e5g3", "h8h7", "g3g7"]),
+                (4, 4, "mate", 2, 527, ["e5g3", "h8h7", "g3g7"])]:
             self.assertEqual(self.read_search_info(depth, seldepth), (kind, score, nodes, pv))
         self.expect("bestmove e5g3")
         self.send("position startpos\ngo depth 1\n")
@@ -1350,7 +1349,7 @@ class UciTests(unittest.TestCase):
 
     def test_principal_variation_includes_quiescence(self):
         self.send("position fen 8/8/8/8/8/5k2/4p3/r6K w - - 0 1\ngo depth 1\n")
-        kind, score, nodes, pv = self.read_search_info(1, seldepth=2)
+        kind, score, nodes, pv = self.read_search_info(1, seldepth=1)
         self.assertEqual((kind, score, pv), ("cp", -1400, ["h1h2", "e2e1q"]))
         self.expect("bestmove h1h2")
         # A new, shorter search must not print a suffix from the previous PV.
@@ -1477,13 +1476,13 @@ class UciTests(unittest.TestCase):
         self.send("position fen 7k/8/5KQ1/8/8/8/8/8 w - - 0 1\ngo depth 4\n")
         # At depth one the queen advantage and then the mate each exceed beta.
         # The three attempts play 1, 16, and 26 moves.
-        for depth, seldepth, nodes in [(1, 2, 43), (2, 1, 66), (3, 1, 89), (4, 1, 112)]:
+        for depth, seldepth, nodes in [(1, 1, 43), (2, 2, 66), (3, 2, 89), (4, 2, 112)]:
             self.assertEqual(self.read_search_info(depth, seldepth), ("mate", 1, nodes, ["g6g7"]))
         self.expect("bestmove g6g7")
         # Only normal search prunes by mate distance; depth one still sends
         # every child to quiescence, including when a fresh go follows.
         self.send("go depth 1\n")
-        self.assertEqual(self.read_search_info(1, 2), ("mate", 1, 43, ["g6g7"]))
+        self.assertEqual(self.read_search_info(1, 1), ("mate", 1, 43, ["g6g7"]))
         self.expect("bestmove g6g7")
         self.expect_state({"f6": "K", "g6": "Q", "h8": "k"})
         self.send("quit\n")
@@ -1534,8 +1533,8 @@ class UciTests(unittest.TestCase):
 
     def test_fifty_move_draw_pv_stops_at_threshold(self):
         self.send("position fen 7k/8/8/8/8/8/8/K2Q4 w - - 99 1\ngo depth 3\n")
-        for depth in range(1, 4):
-            self.assertEqual(self.read_search_info(depth, seldepth=1), ("cp", 0, 23 * depth, ["d1b1"]))
+        for depth, seldepth in [(1, 1), (2, 2), (3, 2)]:
+            self.assertEqual(self.read_search_info(depth, seldepth), ("cp", 0, 23 * depth, ["d1b1"]))
         self.expect("bestmove d1b1")
         # The PV can end with legal replies and unequal material: it is a
         # counter draw, not stalemate or a stand-pat material evaluation.

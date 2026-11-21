@@ -31,11 +31,7 @@ def compare(engine):
             last_play = line
         elif line.startswith("seldepth-rise "):
             rises.append((last_play, line))
-    if rises != [
-        ("play 1 ply 0 g6b1", "seldepth-rise 1 nodes 1"),
-        ("play 13 ply 1 h8g8", "seldepth-rise 2 nodes 13"),
-        ("play 44 ply 0 g6g7", "seldepth-rise 1 nodes 44"),
-    ]:
+    if rises != [("play 44 ply 0 g6g7", "seldepth-rise 1 nodes 44")]:
         raise AssertionError(f"Unexpected C depth updates: {rises}. Use the trace build.")
 
     snapshots = [line for line in theirs.stderr.splitlines()
@@ -49,7 +45,7 @@ def compare(engine):
 
     c_reports = depth_reports(ours.stdout)
     ref_reports = depth_reports(theirs.stdout)
-    if c_reports != [(1, 43, 2), (2, 66, 1)] or ref_reports != [(1, 43, 1), (2, 66, 2)]:
+    if c_reports != ref_reports or ref_reports != [(1, 43, 1), (2, 66, 2)]:
         raise AssertionError(f"Unexpected UCI reports: C={c_reports}, reference={ref_reports}")
     print("Depth   Nodes   C seldepth   Reference seldepth")
     for (depth, nodes, c_depth), (_, _, ref_depth) in zip(c_reports, ref_reports):

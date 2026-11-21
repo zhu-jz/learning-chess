@@ -107,12 +107,11 @@ static struct SearchResult search_at_horizon(struct Position position, int ply,
 {
     struct SearchResult result;
     stats->nodes = 0;
-    stats->selective_depth = 0;
-    int success = negamax(&position, 0, ply, alpha, beta, -1, NULL, NULL, NULL, stats, &result);
+    stats->deepest_pv_ply = 0;
+    int success = negamax(&position, 0, ply, PV_NODE, alpha, beta, -1, NULL, NULL, NULL, stats, &result);
     assert(success);
     assert(result.score == expected_score);
-    assert(stats->selective_depth >= ply + result.pv_length);
-    assert(stats->selective_depth <= MAX_SEARCH_PLY);
+    assert(stats->deepest_pv_ply == 0);
     check_pv(position, result, ply);
     return result;
 }
@@ -175,10 +174,10 @@ static void test_repetition(void)
     }
     struct SearchStats stats = { 0 };
     struct SearchResult result;
-    success = negamax(&a, 0, 5, -INFINITE_SCORE, INFINITE_SCORE,
+    success = negamax(&a, 0, 5, PV_NODE, -INFINITE_SCORE, INFINITE_SCORE,
                       -1, NULL, &history, NULL, &stats, &result);
     assert(success && result.score == 0 && result.pv_length == 0 && stats.nodes == 0);
-    assert(stats.selective_depth == 5);
+    assert(stats.deepest_pv_ply == 0);
     assert(history.count == 6);
     a.halfmove_clock = 0;
     assert(!is_repetition(&a, &history));
@@ -196,14 +195,14 @@ static void test_repetition(void)
     for (int i = 0; i < history.count; i++)
         assert(history.can_repeat[i] == (i >= 4));
     stats.nodes = 0;
-    stats.selective_depth = 0;
-    success = negamax(&a, 1, 0, -INFINITE_SCORE, INFINITE_SCORE,
+    stats.deepest_pv_ply = 0;
+    success = negamax(&a, 1, 0, PV_NODE, -INFINITE_SCORE, INFINITE_SCORE,
                       -1, NULL, &history, NULL, &stats, &result);
     assert(success && result.score == 0 && history.count == 9);
     expect_move(result, "b1a3");
     /* A failed child must also pop its history entry. */
     stats.nodes = ULLONG_MAX - 1;
-    success = negamax(&a, 1, 0, -INFINITE_SCORE, INFINITE_SCORE,
+    success = negamax(&a, 1, 0, PV_NODE, -INFINITE_SCORE, INFINITE_SCORE,
                       -1, NULL, &history, NULL, &stats, &result);
     assert(!success && history.count == 9);
 
@@ -230,8 +229,8 @@ static void test_repetition(void)
         history.can_repeat[i] = 0;
     }
     stats.nodes = 0;
-    stats.selective_depth = 0;
-    success = negamax(&a, 2, MAX_SEARCH_PLY - 2, -INFINITE_SCORE, INFINITE_SCORE,
+    stats.deepest_pv_ply = 0;
+    success = negamax(&a, 2, MAX_SEARCH_PLY - 2, PV_NODE, -INFINITE_SCORE, INFINITE_SCORE,
                       -1, NULL, &history, NULL, &stats, &result);
     assert(success && result.pv_length == 2);
     assert(history.count == GAME_HISTORY_SIZE + MAX_SEARCH_PLY - 2);
@@ -243,54 +242,55 @@ static void test_selective_depth(void)
     struct SearchResult result;
     struct Position position = position_from_fen("7k/8/4p3/3r4/8/8/8/K2Q4", "w", "-");
 
-    /* Stand pat wins, but the rejected capture line still contributes its
-       deepest node: Qxd5 exd5. The PV alone cannot tell us this depth. */
-    int success = negamax(&position, 0, 0, -INFINITE_SCORE, INFINITE_SCORE,
+    /* Qxd5 exd5 adds two moves in quiescence. Neither raises the PV ply. */
+    int success = negamax(&position, 0, 0, PV_NODE, -INFINITE_SCORE, INFINITE_SCORE,
                           -1, NULL, NULL, NULL, &stats, &result);
     assert(success && result.pv_length == 0 && stats.nodes == 2);
-    assert(stats.selective_depth == 2);
+    assert(stats.deepest_pv_ply == 0);
 
-    /* An iteration resets depth but keeps the accumulated node count.
-       Here the new search ends immediately at the stand-pat cutoff. */
-    stats.selective_depth = 0;
-    success = negamax(&position, 0, 0, 0, 200, -1, NULL, NULL, NULL, &stats, &result);
-    assert(success && stats.nodes == 2 && stats.selective_depth == 0);
+    success = negamax(&position, 0, 0, PV_NODE, 0, 200, -1, NULL, NULL, NULL, &stats, &result);
+    assert(success && stats.nodes == 2 && stats.deepest_pv_ply == 0);
 
-    /* Starting near the cap exercises the final legal array boundary. */
+    /* A quiescence evasion can reach the final array slot. */
     position = position_from_fen("7k/2p5/5K2/8/8/8/8/7R", "b", "-");
     result = search_at_horizon(position, MAX_SEARCH_PLY - 1,
                                -INFINITE_SCORE, INFINITE_SCORE, -400, &stats);
-    assert(stats.nodes == 1 && stats.selective_depth == MAX_SEARCH_PLY);
+    assert(stats.nodes == 1 && result.pv_length == 1);
     result = search_at_horizon(position, MAX_SEARCH_PLY,
                                -INFINITE_SCORE, INFINITE_SCORE, -400, &stats);
-    assert(stats.nodes == 0 && stats.selective_depth == MAX_SEARCH_PLY);
+    assert(stats.nodes == 0 && result.pv_length == 0);
 
-    /* Terminal leaves and rule draws also count their arrival ply. */
     position = position_from_fen("k7/1Q6/2K5/8/8/8/8/8", "b", "-");
     result = search_at_horizon(position, 7, -INFINITE_SCORE, INFINITE_SCORE,
                                -MATE_SCORE + 7, &stats);
-    assert(stats.nodes == 0 && stats.selective_depth == 7);
+    assert(stats.nodes == 0 && result.pv_length == 0);
+
+    /* With the same position and window, only the PV visit counts.
+       The draw returns immediately after recording the arrival ply. */
     position = position_from_fen("7k/8/8/8/8/8/8/K2Q4", "w", "-");
     position.halfmove_clock = 100;
-    result = search_at_horizon(position, 5, -INFINITE_SCORE, INFINITE_SCORE, 0, &stats);
-    assert(stats.nodes == 0 && stats.selective_depth == 5);
+    success = negamax(&position, 1, 5, SCOUT_NODE, 0, 1,
+                      -1, NULL, NULL, NULL, &stats, &result);
+    assert(success && stats.deepest_pv_ply == 0);
+    success = negamax(&position, 1, 5, PV_NODE, 0, 1,
+                      -1, NULL, NULL, NULL, &stats, &result);
+    assert(success && stats.deepest_pv_ply == 5);
 
     /* A draw plays no move: a full counter is valid until a move is needed. */
     stats.nodes = ULLONG_MAX;
-    stats.selective_depth = 0;
-    success = negamax(&position, 0, 5, -INFINITE_SCORE, INFINITE_SCORE,
+    success = negamax(&position, 0, 5, PV_NODE, -INFINITE_SCORE, INFINITE_SCORE,
                       -1, NULL, NULL, NULL, &stats, &result);
-    assert(success && stats.nodes == ULLONG_MAX && stats.selective_depth == 5);
+    assert(success && result.score == 0 && stats.nodes == ULLONG_MAX && stats.deepest_pv_ply == 5);
 
     /* Ka2 uses the last counter value. The drawn child can still return. */
     position = position_from_fen("8/7p/8/8/8/8/2k5/K7", "w", "-");
     position.halfmove_clock = 99;
     stats.nodes = ULLONG_MAX - 1;
-    stats.selective_depth = 0;
-    success = negamax(&position, 1, 0, -INFINITE_SCORE, INFINITE_SCORE,
+    stats.deepest_pv_ply = 0;
+    success = negamax(&position, 1, 0, PV_NODE, -INFINITE_SCORE, INFINITE_SCORE,
                       -1, NULL, NULL, NULL, &stats, &result);
     assert(success && result.score == 0 && stats.nodes == ULLONG_MAX);
-    assert(stats.selective_depth == 1);
+    assert(stats.deepest_pv_ply == 0 && result.selective_depth == 1);
     expect_move(result, "a1a2");
 }
 
@@ -307,7 +307,7 @@ static void test_principal_variation_search(void)
     struct Move preferred = legal_move_named(position, "d1d5");
     /* A root hint puts Qxd5 first despite its loss to exd5. Later, Qb1 beats that
        score. Its scout and full re-search share the already-played Qb1. */
-    int success = negamax(&position, 1, 0, -INFINITE_SCORE, INFINITE_SCORE,
+    int success = negamax(&position, 1, 0, PV_NODE, -INFINITE_SCORE, INFINITE_SCORE,
                           -1, &preferred, &history, NULL, &stats, &result);
     assert(success && result.score == 300 && stats.nodes == 30);
     expect_move(result, "d1b1");
@@ -319,8 +319,8 @@ static void test_principal_variation_search(void)
     /* When the scout already reaches beta, its bound proves a cutoff.
        There is no need to search the remaining moves. */
     stats.nodes = 0;
-    stats.selective_depth = 0;
-    success = negamax(&position, 1, 0, -INFINITE_SCORE, 200,
+    stats.deepest_pv_ply = 0;
+    success = negamax(&position, 1, 0, PV_NODE, -INFINITE_SCORE, 200,
                       -1, &preferred, &history, NULL, &stats, &result);
     assert(success && result.score >= 200 && stats.nodes == 3);
     expect_move(result, "d1b1");
@@ -329,8 +329,8 @@ static void test_principal_variation_search(void)
     /* An already narrow window needs no extra scout. A fail-low result
        is an upper bound; it need not give the exact score or best line. */
     stats.nodes = 0;
-    stats.selective_depth = 0;
-    success = negamax(&position, 1, 0, 300, 301,
+    stats.deepest_pv_ply = 0;
+    success = negamax(&position, 1, 0, SCOUT_NODE, 300, 301,
                       -1, &preferred, &history, NULL, &stats, &result);
     assert(success && result.score <= 300 && stats.nodes == 30);
     assert(history.count == 1);
@@ -339,8 +339,8 @@ static void test_principal_variation_search(void)
        The root history must be restored in either case. */
     for (int allowed = 2; allowed <= 3; allowed++) {
         stats.nodes = ULLONG_MAX - allowed;
-        stats.selective_depth = 0;
-        success = negamax(&position, 1, 0, -INFINITE_SCORE, INFINITE_SCORE,
+        stats.deepest_pv_ply = 0;
+        success = negamax(&position, 1, 0, PV_NODE, -INFINITE_SCORE, INFINITE_SCORE,
                           -1, &preferred, &history, NULL, &stats, &result);
         assert(!success && stats.nodes == ULLONG_MAX && history.count == 1);
         assert(same_repetition_position(&position, &history.positions[0]));
@@ -379,7 +379,7 @@ static void test_first_root_cutoff(void)
         struct SearchStats stats = { 0 };
         struct SearchResult result;
         clear_move_hints(&hints);
-        int success = negamax(&root, 1, 0, -9, 9, -1, preferred, NULL, &hints, &stats, &result);
+        int success = negamax(&root, 1, 0, PV_NODE, -9, 9, -1, preferred, NULL, &hints, &stats, &result);
         assert(success && result.score == 900);
         expect_move(result, "g6b1");
         assert(stats.nodes == (trial == 0 ? 1 : 2));
@@ -425,7 +425,7 @@ static void expect_queen_check_nodes(struct Position *position, int ply, struct 
 {
     struct SearchStats stats = { 0, 0, table };
     struct SearchResult result;
-    int success = negamax(position, 0, ply, alpha, beta, -1, NULL, history, NULL, &stats, &result);
+    int success = negamax(position, 0, ply, PV_NODE, alpha, beta, -1, NULL, history, NULL, &stats, &result);
     assert(success && result.score == -900 && stats.nodes == expected_nodes);
     if (expected_nodes == 0)
         assert(result.pv_length == 0);
@@ -483,7 +483,7 @@ static void test_aspiration_windows(void)
     struct SearchResult result;
     int success = search_iteration(&position, 1, NULL, &history, NULL, &stats, &result);
     assert(success && result.score == 0 && stats.nodes == 7 + 23);
-    assert(stats.selective_depth == 1 && history.count == 1);
+    assert(result.selective_depth == 1 && stats.deepest_pv_ply == 0 && history.count == 1);
     expect_move(result, "d1b1");
 
     struct SearchResult previous;
@@ -495,10 +495,11 @@ static void test_aspiration_windows(void)
     for (int i = 0; i < 7; i++) {
         previous.score = estimates[i];
         stats.nodes = 7;
-        stats.selective_depth = MAX_SEARCH_PLY;
+        stats.deepest_pv_ply = MAX_SEARCH_PLY;
         success = search_iteration(&position, 2, &previous, &history, NULL, &stats, &result);
         assert(success && result.score == 0 && result.pv_length == 1);
-        assert(stats.nodes == 7 + expected_nodes[i] && stats.selective_depth == 1);
+        assert(stats.nodes == 7 + expected_nodes[i] && stats.deepest_pv_ply == 1);
+        assert(result.selective_depth == 2);
         expect_move(result, "a1b2");
         check_pv(position, result, 0);
         assert(history.count == 1 && history.can_repeat[0] == 0);
@@ -516,7 +517,7 @@ static void test_aspiration_windows(void)
         for (int allowed = first_attempt_nodes - 1; allowed <= first_attempt_nodes + 1; allowed++) {
             result = previous;
             stats.nodes = ULLONG_MAX - allowed;
-            stats.selective_depth = 0;
+            stats.deepest_pv_ply = 0;
             success = search_iteration(&position, 2, &previous, &history, NULL, &stats, &result);
             assert(!success && stats.nodes == ULLONG_MAX && history.count == 1);
             assert(result.score == previous.score && result.pv_length == 1);
@@ -533,7 +534,7 @@ static void test_aspiration_windows(void)
     stats.nodes = 0;
     success = search_iteration(&position, 2, &previous, NULL, NULL, &stats, &result);
     assert(success && result.score == -MATE_SCORE && result.pv_length == 0);
-    assert(stats.nodes == 0 && stats.selective_depth == 0);
+    assert(stats.nodes == 0 && stats.deepest_pv_ply == 0);
     position = position_from_fen("7k/8/5KQ1/8/8/8/8/8", "w", "-");
     previous.score = MATE_SCORE - 1;
     stats.nodes = 0;
@@ -565,14 +566,14 @@ static void test_mate_distance_pruning(void)
         int scores[] = { lowest, 0, highest, 0 };
         for (int j = 0; j < 4; j++) {
             stats.nodes = 0;
-            stats.selective_depth = 0;
+            stats.deepest_pv_ply = 0;
             result.pv_length = 9; /* A cutoff must discard an old line. */
-            int success = negamax(&position, 1, ply, windows[j][0], windows[j][1],
+            int success = negamax(&position, 1, ply, PV_NODE, windows[j][0], windows[j][1],
                                   -1, NULL, NULL, NULL, &stats, &result);
             assert(success && result.score == scores[j] && stats.nodes == nodes[j]);
             int searched_move = j == 1 || j == 3;
             assert(result.pv_length == searched_move);
-            assert(stats.selective_depth == ply + searched_move);
+            assert(stats.deepest_pv_ply == ply);
             check_pv(position, result, ply);
         }
     }
@@ -580,8 +581,8 @@ static void test_mate_distance_pruning(void)
     /* The root must still choose a move. Quiescence keeps its own search
        even when a mate bound could close a normal-search window. */
     stats.nodes = 0;
-    stats.selective_depth = 0;
-    int success = negamax(&position, 1, 0, MATE_SCORE - 1, INFINITE_SCORE,
+    stats.deepest_pv_ply = 0;
+    int success = negamax(&position, 1, 0, PV_NODE, MATE_SCORE - 1, INFINITE_SCORE,
                           -1, NULL, NULL, NULL, &stats, &result);
     assert(success && result.score == 0 && stats.nodes == 20);
     expect_move(result, "a2a3");
@@ -598,16 +599,16 @@ static void test_mate_distance_pruning(void)
         position = position_from_fen(boards[i], i == 2 ? "w" : "b", "-");
         position.halfmove_clock = 100;
         stats.nodes = 0;
-        stats.selective_depth = 0;
-        success = negamax(&position, 1, 5, MATE_SCORE - 6, INFINITE_SCORE,
+        stats.deepest_pv_ply = 0;
+        success = negamax(&position, 1, 5, PV_NODE, MATE_SCORE - 6, INFINITE_SCORE,
                           -1, NULL, NULL, NULL, &stats, &result);
         assert(success && result.score == (i == 0 ? -MATE_SCORE + 5 : 0));
         assert(stats.nodes == 0 && result.pv_length == 0);
     }
     set_start_position(&position);
     stats.nodes = 0;
-    stats.selective_depth = 0;
-    success = negamax(&position, 1, MAX_SEARCH_PLY, MATE_SCORE - MAX_SEARCH_PLY - 1,
+    stats.deepest_pv_ply = 0;
+    success = negamax(&position, 1, MAX_SEARCH_PLY, PV_NODE, MATE_SCORE - MAX_SEARCH_PLY - 1,
                       INFINITE_SCORE, -1, NULL, NULL, NULL, &stats, &result);
     assert(success && result.score == 0 && stats.nodes == 0 && result.pv_length == 0);
 }
@@ -676,7 +677,7 @@ static void test_capture_history(void)
 
     struct SearchStats stats = { 0 };
     struct SearchResult result;
-    int success = negamax(&position, 2, 0, -101, -100, -1, &queen, NULL, &hints, &stats, &result);
+    int success = negamax(&position, 2, 0, SCOUT_NODE, -101, -100, -1, &queen, NULL, &hints, &stats, &result);
     assert(success && result.score >= -100);
     expect_same_move(result.pv[0], queen);
     assert(hints.capture_history[WHITE_QUEEN][queen.to][WHITE_ROOK] == 290);
@@ -690,7 +691,7 @@ static void test_capture_history(void)
     /* This time Qxd5 fails to improve alpha, then a quiet move cuts off.
        The capture loses credit even though the winning move was quiet. */
     position = position_from_fen("7k/8/4p3/3r4/8/8/8/K2Q4", "w", "-");
-    success = negamax(&position, 1, 0, 199, 200, -1, &queen, NULL, &hints, &stats, &result);
+    success = negamax(&position, 1, 0, SCOUT_NODE, 199, 200, -1, &queen, NULL, &hints, &stats, &result);
     assert(success && result.score >= 200);
     assert(hints.capture_history[WHITE_QUEEN][queen.to][WHITE_ROOK] == -134);
 
@@ -701,7 +702,7 @@ static void test_capture_history(void)
     struct Move ep = legal_move_named(position, "e5d6");
     moves[0] = ep;
     moves[1] = legal_move_named(position, "a1a2");
-    success = negamax(&position, 1, 0, -INFINITE_SCORE, INFINITE_SCORE, -1, &ep, NULL,
+    success = negamax(&position, 1, 0, PV_NODE, -INFINITE_SCORE, INFINITE_SCORE, -1, &ep, NULL,
                       &hints, &stats, &result);
     assert(success && same_move(result.pv[0], ep));
     assert(hints.capture_history[WHITE_PAWN][ep.to][EMPTY] == -27);
@@ -719,7 +720,7 @@ static void test_quiescence_capture_history(void)
     clear_move_hints(&hints);
     struct SearchStats stats = { 0 };
     struct SearchResult result;
-    int success = negamax(&position, 0, 0, -INFINITE_SCORE, 100, -1, NULL, NULL,
+    int success = negamax(&position, 0, 0, PV_NODE, -INFINITE_SCORE, 100, -1, NULL, NULL,
                           &hints, &stats, &result);
     assert(success && result.score == 300 && stats.nodes == 3);
     expect_same_move(result.pv[0], winning);
@@ -728,7 +729,7 @@ static void test_quiescence_capture_history(void)
     int before[PIECE_COUNT][64][WHITE_KING + 1];
     memcpy(before, hints.capture_history, sizeof(before));
     stats.nodes = 0;
-    success = negamax(&position, 0, 0, -INFINITE_SCORE, 100, -1, NULL, NULL,
+    success = negamax(&position, 0, 0, PV_NODE, -INFINITE_SCORE, 100, -1, NULL, NULL,
                       &hints, &stats, &result);
     assert(success && result.score == 300 && stats.nodes == 1);
     expect_same_move(result.pv[0], winning);
@@ -740,7 +741,7 @@ static void test_quiescence_capture_history(void)
     struct Move queen = legal_move_named(position, "a5d5");
     update_capture_history(&hints, &position, queen, 290);
     stats.nodes = 0;
-    success = negamax(&position, 0, 0, -INFINITE_SCORE, 600, -1, NULL, NULL,
+    success = negamax(&position, 0, 0, PV_NODE, -INFINITE_SCORE, 600, -1, NULL, NULL,
                       &hints, &stats, &result);
     assert(success && result.score == 1000);
     expect_move(result, "c4d5");
@@ -799,7 +800,7 @@ static void test_previous_move_evasions(void)
     /* Favor Kg8 in ordinary history for one training search. It beats
        Black's beta of -1000 by 200, increasing the depth-one bonus. */
     hints.quiet_history[BLACK][kg8.from][kg8.to] = 100;
-    assert(negamax(&rook, 2, 0, 1000, 1001, -1, &rh1, NULL, &hints, &stats, &result));
+    assert(negamax(&rook, 2, 0, SCOUT_NODE, 1000, 1001, -1, &rh1, NULL, &hints, &stats, &result));
     struct ReplyHistory *after_rook = &hints.continuation[WHITE_ROOK][rh1.to];
     struct ReplyHistory *after_knight = &hints.continuation[WHITE_KNIGHT][nf3.to];
     assert(after_rook->score[BLACK_KING][kg8.to] == 2);
@@ -809,10 +810,10 @@ static void test_previous_move_evasions(void)
        the two quiescence nodes, and neither horizon search teaches a reply. */
     hints.quiet_history[BLACK][kg8.from][kg8.to] = 0;
     hints.quiet_history[BLACK][kg7.from][kg7.to] = 0;
-    assert(negamax(&rook, 1, 0, 799, 800, -1, &rh1, NULL, &hints, &stats, &result));
+    assert(negamax(&rook, 1, 0, SCOUT_NODE, 799, 800, -1, &rh1, NULL, &hints, &stats, &result));
     assert(result.score == 800 && result.pv_length >= 2);
     expect_same_move(result.pv[1], kg8);
-    assert(negamax(&knight, 1, 0, 799, 800, -1, &nf3, NULL, &hints, &stats, &result));
+    assert(negamax(&knight, 1, 0, SCOUT_NODE, 799, 800, -1, &nf3, NULL, &hints, &stats, &result));
     assert(result.score == 800 && result.pv_length >= 2);
     expect_same_move(result.pv[1], kg7);
     assert(after_rook->score[BLACK_KING][kg8.to] == 2);
@@ -849,7 +850,7 @@ static void test_previous_move_quiets(void)
         hints.continuation[WHITE_PAWN][e4.to].score[BLACK_PAWN][h6.to] = 2;
         struct SearchStats stats = { 0 };
         struct SearchResult result;
-        assert(negamax(&start, 2, 0, -1, 0, -1, &first[i], NULL, &hints, &stats, &result));
+        assert(negamax(&start, 2, 0, SCOUT_NODE, -1, 0, -1, &first[i], NULL, &hints, &stats, &result));
         assert(result.score == 0 && result.pv_length >= 2);
         expect_same_move(result.pv[0], first[i]);
         expect_same_move(result.pv[1], expected[i]);
@@ -880,7 +881,7 @@ static void test_two_plies_back(void)
         hints.continuation[WHITE_PAWN][e4.to].score[WHITE_PAWN][h3.to] = 3;
         struct SearchStats stats = { 0 };
         struct SearchResult result;
-        assert(negamax(&start, 3, 0, -1, 0, -1, &first[i], NULL, &hints, &stats, &result));
+        assert(negamax(&start, 3, 0, SCOUT_NODE, -1, 0, -1, &first[i], NULL, &hints, &stats, &result));
         assert(result.score == 0 && result.pv_length >= 3);
         expect_same_move(result.pv[0], first[i]);
         expect_same_move(result.pv[1], a6);
@@ -896,7 +897,7 @@ static void test_two_plies_back(void)
     hints.replies_at_ply[2] = last;
     struct SearchStats stats = { 0 };
     struct SearchResult result;
-    assert(negamax(&position, 3, 2, -5001, -5000, a6.to, &h3, NULL, &hints, &stats, &result));
+    assert(negamax(&position, 3, 2, SCOUT_NODE, -5001, -5000, a6.to, &h3, NULL, &hints, &stats, &result));
     expect_same_move(result.pv[0], h3);
     assert(last->score[WHITE_PAWN][h3.to] == 6 && older->score[WHITE_PAWN][h3.to] == 7);
     assert(older->score[WHITE_PAWN][a3.to] == 0); /* Never tried after h3 cut off. */
@@ -1036,12 +1037,12 @@ static void test_killer_search(void)
     clear_move_hints(&hints);
     struct SearchStats stats = { 0 };
     struct SearchResult result;
-    int success = negamax(&position, 1, 5, -1, 0, -1, &preferred, NULL, &hints, &stats, &result);
+    int success = negamax(&position, 1, 5, SCOUT_NODE, -1, 0, -1, &preferred, NULL, &hints, &stats, &result);
     assert(success && stats.nodes == 1);
     expect_same_move(hints.killers[5][0], preferred);
     assert(hints.killers[4][0].from == -1 && hints.killers[6][0].from == -1);
     stats.nodes = 0;
-    success = negamax(&position, 1, 5, -1, 0, -1, NULL, NULL, &hints, &stats, &result);
+    success = negamax(&position, 1, 5, SCOUT_NODE, -1, 0, -1, NULL, NULL, &hints, &stats, &result);
     assert(success && stats.nodes == 1);
     expect_move(result, "e2e4"); /* Reused without an explicit preference. */
 
@@ -1054,7 +1055,7 @@ static void test_killer_search(void)
         assert(!is_quiet_move(&position, preferred));
         clear_move_hints(&hints);
         stats.nodes = 0;
-        success = negamax(&position, 1, 0, -INFINITE_SCORE, -5000,
+        success = negamax(&position, 1, 0, PV_NODE, -INFINITE_SCORE, -5000,
                           -1, &preferred, NULL, &hints, &stats, &result);
         assert(success && result.score >= -5000);
         expect_move(result, names[i]);
@@ -1069,7 +1070,7 @@ static void test_killer_search(void)
     preferred = legal_move_named(position, "h8g8");
     remember_killer(&hints, 0, preferred);
     stats.nodes = 0;
-    success = negamax(&position, 0, 0, -600, -500, -1, NULL, NULL, &hints, &stats, &result);
+    success = negamax(&position, 0, 0, PV_NODE, -600, -500, -1, NULL, NULL, &hints, &stats, &result);
     assert(success && result.score == -500);
     expect_move(result, "h8g7");
     expect_same_move(hints.killers[0][0], preferred);
@@ -1078,12 +1079,12 @@ static void test_killer_search(void)
        Even a conflicting killer must not reverse this order in check. */
     remember_killer(&hints, 0, legal_move_named(position, "h8g7"));
     hints.quiet_history[BLACK][preferred.from][preferred.to] = 100;
-    success = negamax(&position, 0, 0, -600, -500, -1, NULL, NULL, &hints, &stats, &result);
+    success = negamax(&position, 0, 0, PV_NODE, -600, -500, -1, NULL, NULL, &hints, &stats, &result);
     assert(success && result.score == -500);
     expect_move(result, "h8g8");
     assert(hints.quiet_history[BLACK][63][62] == 100); /* h8g8 */
     assert(hints.quiet_history[BLACK][63][54] == 0);   /* h8g7 */
-    success = negamax(&position, 1, 0, -600, -500, -1, NULL, NULL, &hints, &stats, &result);
+    success = negamax(&position, 1, 0, PV_NODE, -600, -500, -1, NULL, NULL, &hints, &stats, &result);
     assert(success && result.score == -500);
     expect_move(result, "h8g8");
 
@@ -1091,7 +1092,7 @@ static void test_killer_search(void)
     set_start_position(&position);
     clear_move_hints(&hints);
     stats.nodes = 0;
-    success = negamax(&position, 1, 0, -INFINITE_SCORE, INFINITE_SCORE,
+    success = negamax(&position, 1, 0, PV_NODE, -INFINITE_SCORE, INFINITE_SCORE,
                       -1, NULL, NULL, &hints, &stats, &result);
     assert(success && stats.nodes == 20);
     assert(hints.killers[0][0].from == -1);
@@ -1100,12 +1101,12 @@ static void test_killer_search(void)
     /* Failure before a child result cannot invent a quiet cutoff. */
     set_start_position(&position);
     stats.nodes = ULLONG_MAX;
-    success = negamax(&position, 1, 0, -1, 0, -1, NULL, NULL, &hints, &stats, &result);
+    success = negamax(&position, 1, 0, SCOUT_NODE, -1, 0, -1, NULL, NULL, &hints, &stats, &result);
     assert(!success && hints.killers[0][0].from == -1);
     assert(hints.quiet_history[WHITE][1][16] == 0); /* b1a3 */
     /* At the hard cap there is no row 64 to access. */
     stats.nodes = 0;
-    success = negamax(&position, 1, MAX_SEARCH_PLY, -1, 0,
+    success = negamax(&position, 1, MAX_SEARCH_PLY, SCOUT_NODE, -1, 0,
                       -1, NULL, NULL, &hints, &stats, &result);
     assert(success && stats.nodes == 0 && result.pv_length == 0);
 }
@@ -1124,20 +1125,20 @@ static void test_countermoves(void)
 
     /* Force a quiet cutoff after e2e4, then look for the same reply at
        a different ply where the killer slots are empty. */
-    assert(negamax(&position, 1, 1, -INFINITE_SCORE, -5000,
+    assert(negamax(&position, 1, 1, PV_NODE, -INFINITE_SCORE, -5000,
                    e4, &reply, NULL, &hints, &stats, &result));
     expect_same_move(hints.countermove[WHITE_PAWN][e4], reply);
     assert(hints.countermove[BLACK_PAWN][e4].from == -1);
     assert(hints.countermove[WHITE_KNIGHT][e4].from == -1);
     assert(hints.countermove[WHITE_PAWN][e4 + 1].from == -1);
     hints.quiet_history[BLACK][alternative.from][alternative.to] = HISTORY_LIMIT;
-    assert(negamax(&position, 1, 3, -INFINITE_SCORE, -5000,
+    assert(negamax(&position, 1, 3, PV_NODE, -INFINITE_SCORE, -5000,
                    e4, NULL, NULL, &hints, &stats, &result));
     expect_move(result, "h7h5");
 
     /* A killer takes priority and replaces the old reply on cutoff. */
     remember_killer(&hints, 3, alternative);
-    assert(negamax(&position, 1, 3, -INFINITE_SCORE, -5000,
+    assert(negamax(&position, 1, 3, PV_NODE, -INFINITE_SCORE, -5000,
                    e4, NULL, NULL, &hints, &stats, &result));
     expect_move(result, "a7a6");
     expect_same_move(hints.countermove[WHITE_PAWN][e4], alternative);
@@ -1173,11 +1174,11 @@ static void test_quiet_history(void)
     /* A cutoff at ply three helps at ply five, which has no killer yet. */
     struct SearchStats stats = { 0 };
     struct SearchResult result;
-    int success = negamax(&position, 1, 3, -1, 0, -1, &pawn, NULL, &hints, &stats, &result);
+    int success = negamax(&position, 1, 3, SCOUT_NODE, -1, 0, -1, &pawn, NULL, &hints, &stats, &result);
     assert(success && hints.quiet_history[WHITE][12][28] == 1);
     assert(hints.killers[5][0].from == -1);
     stats.nodes = 0;
-    success = negamax(&position, 1, 5, -1, 0, -1, NULL, NULL, &hints, &stats, &result);
+    success = negamax(&position, 1, 5, SCOUT_NODE, -1, 0, -1, NULL, NULL, &hints, &stats, &result);
     assert(success && stats.nodes == 1 && hints.quiet_history[WHITE][12][28] == 2);
     expect_move(result, "e2e4");
 
@@ -1187,7 +1188,7 @@ static void test_quiet_history(void)
     update_quiet_history(&hints, BLACK, pawn, 4);
     assert(hints.quiet_history[WHITE][52][36] == 0);
     stats.nodes = 0;
-    success = negamax(&position, 1, 0, -1, 0, -1, NULL, NULL, &hints, &stats, &result);
+    success = negamax(&position, 1, 0, SCOUT_NODE, -1, 0, -1, NULL, NULL, &hints, &stats, &result);
     assert(success && stats.nodes == 1 && hints.quiet_history[BLACK][52][36] == 5);
     expect_move(result, "e7e5");
 
@@ -1244,7 +1245,7 @@ static void test_quiet_history(void)
     struct Move castle = legal_move_named(position, "e1c1");
     clear_move_hints(&hints);
     stats.nodes = 0;
-    success = negamax(&position, 1, 0, -1, 0, -1, &castle, NULL, &hints, &stats, &result);
+    success = negamax(&position, 1, 0, SCOUT_NODE, -1, 0, -1, &castle, NULL, &hints, &stats, &result);
     assert(success && stats.nodes == 1 && hints.quiet_history[WHITE][4][2] == 1);
     check_pv(position, result, 0);
 }
@@ -1324,7 +1325,7 @@ static void test_history_penalties(void)
     remember_killer(&hints, 0, kb1);
     struct SearchStats stats = { 0 };
     struct SearchResult result;
-    int success = negamax(&position, 1, 0, -INFINITE_SCORE, 200,
+    int success = negamax(&position, 1, 0, PV_NODE, -INFINITE_SCORE, 200,
                           -1, &preferred, NULL, &hints, &stats, &result);
     assert(success && result.score == 300 && stats.nodes == 10);
     expect_move(result, "d1b1");
@@ -1344,7 +1345,7 @@ static void test_history_penalties(void)
     /* Without a cutoff, even losing alternatives receive no penalty. */
     clear_move_hints(&hints);
     stats.nodes = 0;
-    success = negamax(&position, 1, 0, -INFINITE_SCORE, INFINITE_SCORE,
+    success = negamax(&position, 1, 0, PV_NODE, -INFINITE_SCORE, INFINITE_SCORE,
                       -1, &preferred, NULL, &hints, &stats, &result);
     assert(success && result.score == 300);
     expect_empty_quiet_history(&hints);
@@ -1355,7 +1356,7 @@ static void test_history_penalties(void)
     stats.nodes = 0;
     remember_killer(&hints, 0, ka2);
     remember_killer(&hints, 0, kb1);
-    success = negamax(&position, 2, 0, -INFINITE_SCORE, 200,
+    success = negamax(&position, 2, 0, PV_NODE, -INFINITE_SCORE, 200,
                       -1, &preferred, NULL, &hints, &stats, &result);
     assert(success && result.score == 300);
     expect_move(result, "d1b1");
@@ -1376,7 +1377,7 @@ static void test_history_penalties(void)
         remember_killer(&hints, 0, ka2);
         remember_killer(&hints, 0, kb1);
         stats.nodes = ULLONG_MAX - allowed;
-        success = negamax(&position, 1, 0, -INFINITE_SCORE, 301,
+        success = negamax(&position, 1, 0, PV_NODE, -INFINITE_SCORE, 301,
                           -1, &preferred, &history, &hints, &stats, &result);
         assert(!success && history.count == 1);
         expect_empty_quiet_history(&hints);
@@ -1388,7 +1389,7 @@ static void test_history_penalties(void)
     struct Move quiet = legal_move_named(position, "a1b2");
     clear_move_hints(&hints);
     stats.nodes = 0;
-    success = negamax(&position, 1, 0, -INFINITE_SCORE, 100,
+    success = negamax(&position, 1, 0, PV_NODE, -INFINITE_SCORE, 100,
                       -1, &quiet, NULL, &hints, &stats, &result);
     assert(success && result.score == 300);
     expect_move(result, "b1c3");
@@ -1474,19 +1475,19 @@ int main(void)
        the remaining plies fit, and reusing the result must discard old moves. */
     set_start_position(&position);
     stats.nodes = 0;
-    stats.selective_depth = 0;
-    int success = negamax(&position, 4, 0, -INFINITE_SCORE, INFINITE_SCORE, -1, NULL, NULL, NULL, &stats, &result);
+    stats.deepest_pv_ply = 0;
+    int success = negamax(&position, 4, 0, PV_NODE, -INFINITE_SCORE, INFINITE_SCORE, -1, NULL, NULL, NULL, &stats, &result);
     assert(success && result.pv_length == 4 && stats.nodes == 1876);
     check_pv(position, result, 0);
     stats.nodes = 0;
-    stats.selective_depth = 0;
-    success = negamax(&position, 4, MAX_SEARCH_PLY - 2,
+    stats.deepest_pv_ply = 0;
+    success = negamax(&position, 4, MAX_SEARCH_PLY - 2, PV_NODE,
                       -INFINITE_SCORE, INFINITE_SCORE, -1, NULL, NULL, NULL, &stats, &result);
     assert(success && result.pv_length == 2);
     check_pv(position, result, MAX_SEARCH_PLY - 2);
     stats.nodes = 0;
-    stats.selective_depth = 0;
-    success = negamax(&position, 4, MAX_SEARCH_PLY,
+    stats.deepest_pv_ply = 0;
+    success = negamax(&position, 4, MAX_SEARCH_PLY, PV_NODE,
                       -INFINITE_SCORE, INFINITE_SCORE, -1, NULL, NULL, NULL, &stats, &result);
     assert(success && result.pv_length == 0 && stats.nodes == 0);
 
@@ -1503,8 +1504,8 @@ int main(void)
     set_start_position(&position);
     struct Move preferred = { 12, 28, EMPTY, -1, -1, -1 }; /* e2e4 */
     stats.nodes = 0;
-    stats.selective_depth = 0;
-    success = negamax(&position, 2, 0, -INFINITE_SCORE, INFINITE_SCORE,
+    stats.deepest_pv_ply = 0;
+    success = negamax(&position, 2, 0, PV_NODE, -INFINITE_SCORE, INFINITE_SCORE,
                       -1, &preferred, NULL, NULL, &stats, &result);
     assert(success && result.score == 0 && result.pv_length == 2);
     expect_move(result, "e2e4");
@@ -1513,8 +1514,8 @@ int main(void)
     assert(strcmp(reply, "a7a5") == 0);
     check_pv(position, result, 0);
     stats.nodes = 0;
-    stats.selective_depth = 0;
-    success = negamax(&position, 2, 0, -INFINITE_SCORE, INFINITE_SCORE,
+    stats.deepest_pv_ply = 0;
+    success = negamax(&position, 2, 0, PV_NODE, -INFINITE_SCORE, INFINITE_SCORE,
                       -1, NULL, NULL, NULL, &stats, &result);
     assert(success && result.score == 0 && stats.nodes == 61);
     expect_move(result, "a2a3");
@@ -1569,8 +1570,8 @@ int main(void)
     position.halfmove_clock = 99;
     struct Move castle = { 4, 2, EMPTY, -1, 0, 3 }; /* e1c1, rook a1d1 */
     stats.nodes = 0;
-    stats.selective_depth = 0;
-    success = negamax(&position, 2, 0, -INFINITE_SCORE, INFINITE_SCORE,
+    stats.deepest_pv_ply = 0;
+    success = negamax(&position, 2, 0, PV_NODE, -INFINITE_SCORE, INFINITE_SCORE,
                       -1, &castle, NULL, NULL, &stats, &result);
     assert(success && result.score == 0 && result.pv_length == 1);
     expect_move(result, "e1c1");

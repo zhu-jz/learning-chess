@@ -60,6 +60,7 @@ struct PositionHistory {
 
 struct SearchResult {
     int score;
+    int selective_depth; /* UCI depth saved with the selected root move. */
     int pv_length;
     /* Principal variation: the chosen move followed by the best replies. */
     struct Move pv[MAX_SEARCH_PLY];
@@ -83,7 +84,7 @@ struct QuiescenceTable {
 
 struct SearchStats {
     unsigned long long nodes; /* Moves played by search during this go command. */
-    int selective_depth;      /* Deepest visited ply in this iteration. */
+    int deepest_pv_ply;       /* Deepest positive-depth PV node this iteration. */
     struct QuiescenceTable *table;
 };
 
@@ -1577,24 +1578,26 @@ static void save_quiescence_bound(struct QuiescenceTable *table, const struct Po
         table->count++;
 }
 
+enum { SCOUT_NODE, PV_NODE };
+
 /* Scores belong to the side to move. Alpha is the threshold to improve;
    beta is the threshold where the caller can reject this branch.
    At depth zero, the same recursion becomes a quiescence search. */
-static int negamax(const struct Position *position, int depth, int ply,
+static int negamax(const struct Position *position, int depth, int ply, int node_type,
                    int alpha, int beta,
                    int previous_to, const struct Move *preferred,
                    struct PositionHistory *history,
                    struct MoveHints *hints,
                    struct SearchStats *stats, struct SearchResult *result)
 {
-    /* Selective depth measures how far we reached, including terminal leaves. */
-    if (ply > stats->selective_depth) {
-        stats->selective_depth = ply;
+    if (depth > 0 && node_type == PV_NODE && ply > stats->deepest_pv_ply) {
+        stats->deepest_pv_ply = ply;
 #ifdef TRACE_SEARCH_MOVES
         fprintf(stderr, "seldepth-rise %d nodes %llu\n", ply, stats->nodes);
 #endif
     }
     result->pv_length = 0;
+    result->selective_depth = 0;
 
     struct Move *moves = malloc(MAX_MOVES * sizeof(struct Move));
     if (moves == NULL)
@@ -1747,17 +1750,18 @@ static int negamax(const struct Position *position, int depth, int ply,
             /* Later moves first ask only whether they can beat alpha.
                With integer scores, no score lies between alpha and alpha+1.
                Changing sides negates and reverses these window ends. */
-            success = negamax(&child, child_depth, ply + 1, -alpha - 1, -alpha,
+            success = negamax(&child, child_depth, ply + 1, SCOUT_NODE, -alpha - 1, -alpha,
                               moves[i].to, NULL, history, hints, stats, &reply);
             /* A better move needs its full score and PV. A result at beta
                already proves a cutoff, so it needs no second search. */
             if (success && -reply.score > alpha && -reply.score < beta)
-                success = negamax(&child, child_depth, ply + 1, -beta, -alpha,
+                success = negamax(&child, child_depth, ply + 1, node_type, -beta, -alpha,
                                   moves[i].to, NULL, history, hints, stats, &reply);
         } else {
             /* The first move uses the whole available window. Quiescence
                and windows already one point wide keep ordinary alpha-beta. */
-            success = negamax(&child, child_depth, ply + 1, -beta, -alpha,
+            int child_type = i == 0 ? node_type : SCOUT_NODE;
+            success = negamax(&child, child_depth, ply + 1, child_type, -beta, -alpha,
                               moves[i].to, NULL, history, hints, stats, &reply);
         }
         /* Pop even on failure, before a cutoff or the next sibling move. */
@@ -1768,6 +1772,10 @@ static int negamax(const struct Position *position, int depth, int ply,
             return 0;
         }
         int score = -reply.score;
+        /* The first root move supplies a line. Save a new depth when
+           another move beats alpha. UCI counts the root as level one. */
+        if (ply == 0 && depth > 0 && (i == 0 || score > alpha))
+            result->selective_depth = stats->deepest_pv_ply + 1;
         /* Strict comparison keeps the first searched move when scores tie. */
         if (score > result->score) {
             result->score = score;
@@ -1823,7 +1831,7 @@ static void print_search_info(int depth, const struct SearchResult *result,
                               const struct SearchStats *stats)
 {
     int score = result->score;
-    printf("info depth %d seldepth %d score ", depth, stats->selective_depth);
+    printf("info depth %d seldepth %d score ", depth, result->selective_depth);
     if (abs(score) >= MATE_SCORE - MAX_SEARCH_PLY) {
         int plies = MATE_SCORE - abs(score);
         int moves_to_mate = (plies + 1) / 2;
@@ -2000,10 +2008,10 @@ static int search_iteration(const struct Position *position, int depth,
 
     /* Nodes include earlier depths; selective depth includes all retries
        at this depth. Neither counter is reset inside the retry loop. */
-    stats->selective_depth = 0;
+    stats->deepest_pv_ply = 0;
     for (;;) {
         struct SearchResult attempt;
-        if (!negamax(position, depth, 0, alpha, beta, -1, preferred, history, hints, stats, &attempt))
+        if (!negamax(position, depth, 0, PV_NODE, alpha, beta, -1, preferred, history, hints, stats, &attempt))
             return 0;
 #ifdef TRACE_SEARCH_MOVES
         fprintf(stderr, "root-window %d %d %d %d nodes %llu\n",
