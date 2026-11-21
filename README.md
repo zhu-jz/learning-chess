@@ -2807,6 +2807,41 @@ lesson 53 control still adds two Kg8 replies when the reference treats
 the corresponding lookups as misses. C reports selective depth 2 for
 this fixture and the reference reports 1.
 
+## Lesson 55 — Which visit raises selective depth?
+
+In the Qg7# fixture the engines play the same 43 moves at depth one.
+Follow nodes 12 and 13 on the second attempt. White plays Qh5+ from
+the root, then Black plays Kg8 in quiescence. The king move leaves the
+search two plies from the root. C records that distance as soon as it
+enters the child. Its maximum was one after Qb1 at node 1, rises to two
+at node 13, and stays there through the third attempt.
+
+The reference updates its worker's maximum inside the positive-depth
+search at a principal-variation (PV) node. A depth-zero call goes
+straight to quiescence, before that update. At depth one the root is
+the only positive-depth PV node and its ply is zero. The worker still
+holds zero after each of the three attempts. The reference saves that
+value with Qg7 and adds one when printing the move's UCI report.
+
+Now continue the same search to depth two. The first move is Qg7# at
+node 44. Its child enters the reference's positive-depth PV search at
+ply one, which raises the worker maximum to one. The printed value is
+two. C starts its depth counter afresh and reaches only ply one during
+this iteration.
+
+| Completed depth | Cumulative nodes in each engine | C UCI seldepth | Reference saved depth | Reference UCI seldepth |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 43 | 2 | 0 | 1 |
+| 2 | 66 | 1 | 1 | 2 |
+
+Rebuild the trace executable with the command in lesson 51, then run
+the comparison. It records the C moves that raised the maximum and
+checks the reference worker, selected move, and UCI reports separately.
+
+```powershell
+.\.venv\Scripts\python.exe -B tests\compare_seldepth.py build\trace-moves.exe
+```
+
 ## Build and try it
 
 From the project root in PowerShell, using MSYS2 UCRT64 GCC:

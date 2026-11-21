@@ -12,6 +12,7 @@ if __name__ == "__main__":
     from uci import uci_move
 
     original_search = search.search_node
+    original_print_pv = search.uci_print_pv
     original_do_move = search.do_move
     original_probe = search.tt_probe
     miss_after_checks = "--miss-after-checks" in sys.argv
@@ -51,9 +52,22 @@ if __name__ == "__main__":
         if at_root:
             print("root-window", depth, alpha, beta, score, before, position.nodes,
                   file=sys.stderr)
+            if trace_depth:
+                print("worker-seldepth", position.selDepth, "nodes", position.nodes, file=sys.stderr)
         return score
 
+    def trace_print_pv(position, depth, alpha, beta, final=False):
+        # The single-PV report reads the depth saved with the leading move.
+        leading = position.rootMoves.move[0]
+        print("saved-seldepth", leading.selDepth, uci_move(leading.pv[0], position.chess960),
+              "depth", depth, file=sys.stderr)
+        original_print_pv(position, depth, alpha, beta, final)
+
     search.search_node = trace_search
+    trace_depth = "--seldepth" in sys.argv
+    if trace_depth:
+        sys.argv.remove("--seldepth")
+        search.uci_print_pv = trace_print_pv
     # Extra move-by-move output is optional for larger searches.
     if "--moves" in sys.argv:
         sys.argv.remove("--moves")

@@ -1588,8 +1588,12 @@ static int negamax(const struct Position *position, int depth, int ply,
                    struct SearchStats *stats, struct SearchResult *result)
 {
     /* Selective depth measures how far we reached, including terminal leaves. */
-    if (ply > stats->selective_depth)
+    if (ply > stats->selective_depth) {
         stats->selective_depth = ply;
+#ifdef TRACE_SEARCH_MOVES
+        fprintf(stderr, "seldepth-rise %d nodes %llu\n", ply, stats->nodes);
+#endif
+    }
     result->pv_length = 0;
 
     struct Move *moves = malloc(MAX_MOVES * sizeof(struct Move));
