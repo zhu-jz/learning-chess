@@ -2729,6 +2729,44 @@ checks equality of the complete move sequence, including the ply of each
 reply. In the third attempt C still plays two more moves than the
 reference.
 
+## Lesson 53 — Why does Black play Kg8 twice more in C?
+
+In the Qg7# fixture both engines enter the third attempt with 17 nodes
+already counted. White tries Qg7# first. The wider window admits its
+mate score, so the root continues checking the alternatives. This time
+both engines play the same 23 White moves in the same order. The
+difference occurs one ply deeper, when Black is in check.
+
+| Black to move after | C on attempt 3 | Reference on attempt 3 | Bound saved on attempt 2 |
+| --- | --- | --- | ---: |
+| Qh5+ | Plays Kg8 | Returns from the table | At least −1946 |
+| Qh6+ | Plays Kg8 | Returns from the table | At least −1884 |
+
+The bounds are in reference units, from Black's perspective. On attempt
+two the reference played Kg8 in each position and saved a lower bound
+in its transposition table. On attempt three the scout search asks
+whether Black can score at least **−31999**. Even the weaker bound,
+−1946, clears that threshold. Each entry also covers the required
+quiescence depth. The reference can return the stored bound immediately.
+The C search calculates the answer again, playing Kg8 once in each
+position.
+
+The replay from lesson 51 now runs a third search as a control. In a
+fresh reference process it treats the table lookups after Qh5+ and Qh6+
+as misses. The first two attempts still match the ordinary reference
+trace. On the third, the reference plays both king replies and matches
+all 28 C moves in order.
+
+| Depth-one nodes | C | Reference | Reference with two forced misses |
+| --- | ---: | ---: | ---: |
+| First two attempts combined | 17 | 17 | 17 |
+| Third attempt | 28 | 26 | 28 |
+| UCI total | 45 | 43 | 45 |
+
+To reproduce the comparison with the trace build, run
+`python tests/compare_retry_moves.py build/trace-moves.exe` using the
+project Python environment.
+
 ## Build and try it
 
 From the project root in PowerShell, using MSYS2 UCRT64 GCC:

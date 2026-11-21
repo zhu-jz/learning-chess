@@ -1,4 +1,4 @@
-"""Trace reference root windows to stderr. Add --moves to trace each played move."""
+"""Trace reference root windows. Lesson 53 uses --miss-after-checks with --moves."""
 
 from pathlib import Path
 import runpy
@@ -13,12 +13,27 @@ if __name__ == "__main__":
 
     original_search = search.search_node
     original_do_move = search.do_move
+    original_probe = search.tt_probe
+    miss_after_checks = "--miss-after-checks" in sys.argv
+    checked_positions = {}
 
     def trace_move(position, move, gives_check):
         ply = position.st.ply
         original_do_move(position, move, gives_check)
-        print("play", position.nodes, "ply", ply, uci_move(move, position.chess960),
-              file=sys.stderr)
+        name = uci_move(move, position.chess960)
+        print("play", position.nodes, "ply", ply, name, file=sys.stderr)
+        # In the Qg7 fixture the halfmove clock is low, so quiescence probes
+        # the position key directly. Remember the two Black-to-move positions.
+        if miss_after_checks and ply == 0 and gives_check and name in ("g6h5", "g6h6"):
+            checked_positions[position.st.key] = name
+
+    def probe_with_two_misses(key):
+        hit, entry = original_probe(key)
+        if hit and key in checked_positions:
+            print("forced-miss", checked_positions[key], "bound", search.tte_bound(entry),
+                  "value", search.tte_value(entry), file=sys.stderr)
+            return False, entry
+        return hit, entry
 
     def trace_search(position, alpha, beta, depth, cut_node, node_type):
         at_root = position.st.ply == 0 and node_type == search.PV
@@ -43,4 +58,8 @@ if __name__ == "__main__":
     if "--moves" in sys.argv:
         sys.argv.remove("--moves")
         search.do_move = trace_move
+    if miss_after_checks:
+        sys.argv.remove("--miss-after-checks")
+        search.do_move = trace_move
+        search.tt_probe = probe_with_two_misses
     runpy.run_path(str(reference / "__main__.py"), run_name="__main__")
